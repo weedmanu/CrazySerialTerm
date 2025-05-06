@@ -51,23 +51,13 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 - Enregistrez les données reçues et envoyées dans un fichier texte pour une analyse ultérieure.
 
----
 
-## Installation pour les utilisateurs finaux
 
-### Utilisation du fichier `.exe`
-
-1. Téléchargez le fichier exécutable `    CrazySerialTerm.exe` depuis le dossier `Programme .exe`.
-2. Double-cliquez sur `    CrazySerialTerm.exe` pour lancer l'application.
-3. Aucune installation supplémentaire n'est nécessaire. Toutes les dépendances sont incluses dans l'exécutable.
-
----
-
-## Installation pour les développeurs
+## Installation 
 
 ### Structure du projet
 
-Le dossier `Programme .py` contient les fichiers source Python suivants :
+Le dossier `Programme_py` contient les fichiers source Python suivants :
 
 - `    CrazySerialTerm.py` : Le fichier principal de l'application.
 - `checksum_calculator.py` : Module pour la calculatrice de checksums.
