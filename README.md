@@ -101,3 +101,4 @@ cd "c:\Users\weedm\Documents\GitHub\    CrazySerialTerm\Programme .py"
 python     CrazySerialTerm.py
 ```
 
+
