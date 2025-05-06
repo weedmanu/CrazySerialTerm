@@ -85,10 +85,15 @@ pip install PyQt5 pyserial
 cd "c:\Users\weedm\Documents\GitHub\    CrazySerialTerm\Programme .py"
 ```
 
-2. Lancez l'application avec Python :
+2. Lancez l'application avec Python (avec console) :
 
 ```bash
 python CrazySerialTerm.py
 ```
 
 
+3. Lancez l'application avec Python (sans console) :
+
+```bash
+python CrazySerialTerm.pyw
+```
