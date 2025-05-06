@@ -98,7 +98,7 @@ cd "c:\Users\weedm\Documents\GitHub\    CrazySerialTerm\Programme .py"
 2. Lancez l'application avec Python :
 
 ```bash
-python     CrazySerialTerm.py
+python CrazySerialTerm.py
 ```
 
 
