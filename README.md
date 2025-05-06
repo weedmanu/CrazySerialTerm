@@ -57,8 +57,8 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 ### Utilisation du fichier `.exe`
 
-1. Téléchargez le fichier exécutable `CustomTerminal.exe` depuis le dossier `Programme .exe`.
-2. Double-cliquez sur `CustomTerminal.exe` pour lancer l'application.
+1. Téléchargez le fichier exécutable `    CrazySerialTerm.exe` depuis le dossier `Programme .exe`.
+2. Double-cliquez sur `    CrazySerialTerm.exe` pour lancer l'application.
 3. Aucune installation supplémentaire n'est nécessaire. Toutes les dépendances sont incluses dans l'exécutable.
 
 ---
@@ -69,7 +69,7 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 Le dossier `Programme .py` contient les fichiers source Python suivants :
 
-- `CustomTerminal.py` : Le fichier principal de l'application.
+- `    CrazySerialTerm.py` : Le fichier principal de l'application.
 - `checksum_calculator.py` : Module pour la calculatrice de checksums.
 - `data_converter.py` : Module pour le convertisseur de données.
 - `LogoFreeTermIco.ico` : Icône de l'application.
@@ -92,12 +92,12 @@ pip install PyQt5 pyserial
 1. Naviguez dans le dossier `Programme .py` via un terminal :
 
 ```bash
-cd "c:\Users\weedm\Documents\GitHub\CustomTerminal\Programme .py"
+cd "c:\Users\weedm\Documents\GitHub\    CrazySerialTerm\Programme .py"
 ```
 
 2. Lancez l'application avec Python :
 
 ```bash
-python CustomTerminal.py
+python     CrazySerialTerm.py
 ```
 
