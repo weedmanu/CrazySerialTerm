@@ -6,7 +6,7 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 ## Aperçu de l'interface
 
-![Aperçu de l'interface](images/interface.png)
+![Aperçu de l'interface](interface.png)
 
 ---
 ## Fonctionnalités principales
