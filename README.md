@@ -62,7 +62,7 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 ### Structure du projet
 
-Le dossier `Programme_py` contient les fichiers source Python suivants :
+Le dossier `CrazySerialTerm` contient les fichiers source Python suivants :
 
 - `CrazySerialTerm.py` : Le fichier principal de l'application.
 - `checksum_calculator.py` : Module pour la calculatrice de checksums.
@@ -84,21 +84,12 @@ pip install PyQt5 pyserial
 
 ### Lancement de l'application
 
-1. Naviguez dans le dossier `Programme_py` via un terminal :
+1. Naviguez dans le dossier `CrazySerialTerm-main`.
 
-```bash
-cd "c:\Users\weedm\Documents\GitHub\CrazySerialTerm\Programme_py"
-```
-
-2. Lancez l'application avec Python (avec console) :
-
-```bash
-python CrazySerialTerm.py
-```
+2. Double cliquez sur le fichier `CrazySerialTerm.py` pour lancer l'application.
 
 
-3. Lancez l'application avec Python (sans console) :
+### Notes supplémentaires
 
-```bash
-python CrazySerialTerm.pyw
-```
+- Assurez-vous que tous les fichiers nécessaires (comme `CrazySerialTerm.py`, `checksum_calculator.py`, et `data_converter.py`) sont présents dans le dossier `CrazySerialTerm`.
+- Si vous rencontrez des problèmes, vérifiez que les bibliothèques `PyQt5` et `pyserial` sont correctement installées.
