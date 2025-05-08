@@ -84,10 +84,10 @@ pip install PyQt5 pyserial
 
 ### Lancement de l'application
 
-1. Naviguez dans le dossier `Programme .py` via un terminal :
+1. Naviguez dans le dossier `Programme_py` via un terminal :
 
 ```bash
-cd "c:\Users\weedm\Documents\GitHub\    CrazySerialTerm\Programme .py"
+cd "c:\Users\weedm\Documents\GitHub\CrazySerialTerm\Programme_py"
 ```
 
 2. Lancez l'application avec Python (avec console) :
