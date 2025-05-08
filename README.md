@@ -64,7 +64,7 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 Le dossier `Programme_py` contient les fichiers source Python suivants :
 
-- `    CrazySerialTerm.py` : Le fichier principal de l'application.
+- `CrazySerialTerm.py` : Le fichier principal de l'application.
 - `checksum_calculator.py` : Module pour la calculatrice de checksums.
 - `data_converter.py` : Module pour le convertisseur de données.
 - `LogoFreeTermIco.ico` : Icône de l'application.
