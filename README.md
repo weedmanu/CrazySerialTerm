@@ -4,6 +4,11 @@ Ce projet est un terminal de communication série avancé, conçu pour faciliter
 
 ---
 
+## Aperçu de l'interface
+
+![Aperçu de l'interface](images/interface.png)
+
+---
 ## Fonctionnalités principales
 
 - **Connexion série** : Sélectionnez un port série, configurez les paramètres (baudrate, bits de données, parité, etc.) et connectez-vous facilement.
