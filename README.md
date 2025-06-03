@@ -1,95 +1,72 @@
-# Terminal de Communication Série Avancé
+# CrazySerialTerm
 
-Ce projet est un terminal de communication série avancé, conçu pour faciliter les interactions avec des périphériques via des ports série. Il offre une interface graphique conviviale et des fonctionnalités puissantes pour les utilisateurs finaux et les développeurs.
+Terminal de communication série avancé avec interface graphique.
 
----
+## Fonctionnalités
 
-## Aperçu de l'interface
+- Interface graphique intuitive avec PyQt5
+- Connexion à des ports série avec paramètres configurables
+- Envoi et réception de données en formats ASCII et HEX
+- Enregistrement des données dans des fichiers log
+- Historique des commandes
+- Commandes prédéfinies personnalisables
+- Filtrage des données reçues
+- Thèmes d'interface personnalisables
+- Calculatrice de checksum intégrée
+- Convertisseur ASCII/HEX
 
-![Aperçu de l'interface](CrazySerialTerm.png)
-
----
-## Fonctionnalités principales
-
-- **Connexion série** : Sélectionnez un port série, configurez les paramètres (baudrate, bits de données, parité, etc.) et connectez-vous facilement.
-- **Affichage des données** : Visualisez les données reçues en temps réel en ASCII, HEX ou les deux formats.
-- **Envoi de données** : Envoyez des commandes en ASCII ou HEX avec des options de fin de ligne (NL, CR, NL+CR).
-- **Outils intégrés** :
-  - **Calculatrice de checksums** : Calculez des checksums (CRC8, CRC16, CRC32, MD5, SHA-1, SHA-256, etc.).
-  - **Convertisseur de données** : Convertissez des données entre les formats ASCII et HEX.
-- **Personnalisation** :
-  - Thèmes (clair, sombre, hacker).
-  - Options d'affichage (défilement automatique, timestamps, filtres).
-- **Commandes prédéfinies** : Configurez des commandes fréquemment utilisées pour un accès rapide.
-- **Enregistrement des logs** : Enregistrez les données reçues et envoyées dans un fichier texte.
-
----
-
-## Options et paramètres
-
-### Paramètres de connexion
-
-- **Port série** : Sélectionnez le port série disponible sur votre système.
-- **Baudrate** : Configurez la vitesse de communication (par exemple : 9600, 115200).
-- **Bits de données** : Choisissez entre 5, 6, 7 ou 8 bits.
-- **Parité** : Aucune, paire ou impaire.
-- **Bits de stop** : 1, 1.5 ou 2 bits.
-- **Contrôle de flux** : Aucun, XON/XOFF, RTS/CTS ou DSR/DTR.
-
-### Options d'affichage
-
-- **Format d'affichage** : ASCII, HEX ou les deux.
-- **Défilement automatique** : Activez ou désactivez le défilement automatique des données reçues.
-- **Timestamps** : Ajoutez un horodatage aux données reçues.
-- **Filtres** : Appliquez un filtre (regex) pour afficher uniquement les données correspondantes.
-
-### Outils intégrés
-
-- **Calculatrice de checksums** : Permet de calculer des checksums pour les données saisies (CRC8, CRC16, CRC32, MD5, SHA-1, SHA-256, etc.).
-- **Convertisseur de données** : Convertissez des données entre les formats ASCII et HEX.
-
-### Commandes prédéfinies
-
-- Configurez des commandes fréquemment utilisées pour un accès rapide dans l'interface.
-
-### Enregistrement des logs
-
-- Enregistrez les données reçues et envoyées dans un fichier texte pour une analyse ultérieure.
-
-
-
-## Installation 
-
-### Structure du projet
-
-Le dossier `CrazySerialTerm` contient les fichiers source Python suivants :
-
-- `CrazySerialTerm.py` : Le fichier principal de l'application.
-- `checksum_calculator.py` : Module pour la calculatrice de checksums.
-- `data_converter.py` : Module pour le convertisseur de données.
-- `LogoFreeTermIco.ico` : Icône de l'application.
+## Installation
 
 ### Prérequis
 
-- **Python 3.x** : Assurez-vous que Python est installé sur votre système. [Télécharger Python](https://www.python.org/).
-- **pip** : Le gestionnaire de paquets Python, généralement inclus avec Python.
+- Python 3.6 ou supérieur
+- PyQt5
+- pyserial
 
 ### Installation des dépendances
-
-Exécutez la commande suivante pour installer les bibliothèques nécessaires :
 
 ```bash
 pip install PyQt5 pyserial
 ```
 
-### Lancement de l'application
+### Exécution
 
-1. Naviguez dans le dossier `CrazySerialTerm-main`.
+```bash
+python CrazySerialTerm.pyw
+```
 
-2. Double cliquez sur le fichier `CrazySerialTerm.py` pour lancer l'application.
+## Structure du projet
 
+- `CrazySerialTerm.pyw` : Script principal de l'application
+- `config.py` : Configuration de l'application
+- `serial_utils.py` : Utilitaires pour la communication série
+- `observer.py` : Implémentation du pattern Observer pour la gestion des événements
+- `checksum_calculator.py` : Module pour le calcul de checksums
+- `data_converter.py` : Module pour la conversion de données
+- `tests/` : Tests unitaires
 
-### Notes supplémentaires
+## Utilisation
 
-- Assurez-vous que tous les fichiers nécessaires (comme `CrazySerialTerm.py`, `checksum_calculator.py`, et `data_converter.py`) sont présents dans le dossier `CrazySerialTerm`.
-- Si vous rencontrez des problèmes, vérifiez que les bibliothèques `PyQt5` et `pyserial` sont correctement installées.
+1. Lancez l'application
+2. Sélectionnez le port série dans la liste déroulante
+3. Configurez les paramètres de connexion (vitesse, bits de données, parité, etc.)
+4. Cliquez sur "Connecter" pour établir la connexion
+5. Utilisez le champ de saisie pour envoyer des commandes
+6. Les données reçues s'affichent dans la zone de terminal
+
+## Raccourcis clavier
+
+- `Ctrl+K` : Connecter/Déconnecter
+- `Ctrl+C` : Effacer le terminal
+- `Ctrl+S` : Enregistrer le contenu du terminal
+- `Ctrl+L` : Démarrer/Arrêter l'enregistrement
+- `Ctrl+T` : Afficher/Masquer le panneau d'envoi
+- Flèches haut/bas : Naviguer dans l'historique des commandes
+
+## Licence
+
+Ce projet est distribué sous licence MIT.
+
+## Contribution
+
+Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou à soumettre une pull request.
