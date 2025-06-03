@@ -1,19 +1,25 @@
 # CrazySerialTerm
 
-Terminal de communication série avancé avec interface graphique.
+Terminal de communication série avancé avec interface graphique pour la connexion et l'interaction avec des périphériques série.
+
+## Description
+
+CrazySerialTerm est un terminal série complet qui offre une interface graphique moderne et intuitive pour communiquer avec des périphériques via port série. Idéal pour les développeurs, les ingénieurs et les hobbyistes travaillant avec des microcontrôleurs, des modules radio, ou tout autre appareil utilisant une communication série.
 
 ## Fonctionnalités
 
-- Interface graphique intuitive avec PyQt5
+- Interface graphique intuitive avec thèmes personnalisables (clair, sombre, hacker)
 - Connexion à des ports série avec paramètres configurables
 - Envoi et réception de données en formats ASCII et HEX
-- Enregistrement des données dans des fichiers log
-- Historique des commandes
-- Commandes prédéfinies personnalisables
-- Filtrage des données reçues
-- Thèmes d'interface personnalisables
-- Calculatrice de checksum intégrée
-- Convertisseur ASCII/HEX
+- Enregistrement des communications dans des fichiers log
+- Historique des commandes avec navigation
+- Commandes prédéfinies personnalisables et accessibles rapidement
+- Filtrage des données reçues avec support des expressions régulières
+- Affichage des timestamps et délais entre trames
+- Outils intégrés : calculatrice de checksum et convertisseur ASCII/HEX
+- Support des commandes AT ESP01 avec documentation intégrée
+- Sections pliables/dépliables dans les paramètres avancés
+- Gestion robuste des déconnexions USB inattendues
 
 ## Installation
 
@@ -29,10 +35,19 @@ Terminal de communication série avancé avec interface graphique.
 pip install PyQt5 pyserial
 ```
 
+
 ### Exécution
 
+## Sans console
+
 ```bash
-python CrazySerialTerm.pyw
+python CrazySerialTerm.pyw 
+```
+
+## Avec console
+
+```bash
+python CrazySerialTerm.py
 ```
 
 ## Structure du projet
@@ -65,7 +80,7 @@ python CrazySerialTerm.pyw
 
 ## Licence
 
-Ce projet est distribué sous licence MIT.
+Ce logiciel est libre d'utilisation, de modification et de distribution sans restriction.
 
 ## Contribution
 
