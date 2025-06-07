@@ -82,6 +82,3 @@ python CrazySerialTerm.py
 
 Ce logiciel est libre d'utilisation, de modification et de distribution sans restriction.
 
-## Contribution
-
-Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou à soumettre une pull request.
