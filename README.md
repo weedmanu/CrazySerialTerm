@@ -38,13 +38,13 @@ pip install PyQt5 pyserial
 
 ### Exécution
 
-#### Sans console
+## Sans console
 
 ```bash
 python CrazySerialTerm.pyw 
 ```
 
-#### Avec console
+## Avec console
 
 ```bash
 python CrazySerialTerm.py

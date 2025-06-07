@@ -1,64 +1,117 @@
+# Bibliothèques standard
 import sys
 import threading
 import signal
 import os
 import json
+import re
+import logging
 from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 
+# Configuration du système de journalisation
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("serial_terminal.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("CrazySerialTerm")
+
+# Bibliothèques PyQt5
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QTextEdit, QLineEdit, QMainWindow, QMenu, QAction, QFontDialog, QColorDialog, 
                              QMessageBox, QInputDialog, QStyleFactory, QCheckBox, QSpacerItem, QSizePolicy,
-                             QFileDialog, QToolBar, QStatusBar, QGroupBox, QTabWidget, QShortcut, QDialog, QGridLayout)
+                             QFileDialog, QToolBar, QStatusBar, QGroupBox, QTabWidget, QShortcut, QDialog, QGridLayout,
+                             QScrollArea)
 from PyQt5.QtGui import QColor, QTextCursor, QFont, QKeySequence, QIcon, QPalette, QTextCharFormat
 from PyQt5.QtCore import Qt, QMetaObject, Q_ARG, pyqtSlot, QTimer, QSettings
-import serial.tools.list_ports, re # Ajout de l'import re manquant
-import serial
 
-# Importer les dialogues depuis leurs fichiers séparés
+# Bibliothèques tierces
+import serial
+import serial.tools.list_ports
+
+# Modules locaux
 from checksum_calculator import ChecksumCalculator
 from data_converter import DataConverter
+from esp_at_commands import ESP_AT_COMMANDS
+from bt_at_commands import BT_AT_COMMANDS
 
 def resource_path(relative_path):
-    """ Obtenir le chemin absolu vers la ressource, fonctionne pour dev et pour PyInstaller """
+    """
+    Obtenir le chemin absolu vers la ressource, fonctionne pour dev et pour PyInstaller.
+    
+    Args:
+        relative_path (str): Chemin relatif vers la ressource
+        
+    Returns:
+        str: Chemin absolu vers la ressource
+    """
     try:
         # PyInstaller crée un dossier temporaire et stocke le chemin dans _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
-        # Non packagé, utiliser le chemin absolu du script
-        base_path = os.path.abspath(".") # Ou os.path.dirname(__file__) pour être plus précis
+        # Non packagé, utiliser le chemin du script actuel
+        base_path = os.path.dirname(os.path.abspath(__file__))
 
     return os.path.join(base_path, relative_path)
 
 
 class Terminal(QMainWindow):
+    """
+    Terminal de communication série avancé avec interface graphique.
+    Permet la connexion, l'envoi et la réception de données via port série.
+    """
+    
+    # Constantes de classe
+    PORT_CHECK_INTERVAL = 5000  # ms
+    MAX_HISTORY_SIZE = 100
+    DEFAULT_BUFFER_SIZE = 10000
+    
     def __init__(self):
         super().__init__()
         # Configuration de base
         self.serial_port = None
         self.read_thread = None
         self.read_thread_running = False
-        self.command_history = []
-        self.history_index = -1
+        self.command_history: List[str] = []
+        self.history_index: int = -1
         self.settings = QSettings("SerialTerminal", "Settings")
         self.log_file = None
-        self.rx_bytes_count = 0
-        self.tx_bytes_count = 0
+        self.rx_bytes_count: int = 0
+        self.tx_bytes_count: int = 0
+        self.last_receive_time: Optional[datetime] = None
+        
+        # Charger les constantes de configuration
+        try:
+            from config import MAX_SAVED_COMMANDS
+            self.max_saved_commands = MAX_SAVED_COMMANDS
+        except (ImportError, AttributeError):
+            self.max_saved_commands = 10
+            
+        logger.info("Initialisation du terminal série")
         
         self.initUI()
         # Utiliser la fonction resource_path pour trouver l'icône
-        self.setWindowIcon(QIcon(resource_path('LogoFreeTermIco.ico')))        
+        icon_path = resource_path('LogoFreeTermIco.ico')
+        self.setWindowIcon(QIcon(icon_path))
+        logger.debug(f"Icône chargée depuis: {icon_path}")
+        
         self.loadSettings()
         self.setupShortcuts()
         
         # Vérifier périodiquement les ports disponibles
         self.port_timer = QTimer()
         self.port_timer.timeout.connect(self.checkPorts)
-        self.port_timer.start(5000)  # Vérifier toutes les 5 secondes
+        self.port_timer.start(self.PORT_CHECK_INTERVAL)
+        logger.debug(f"Timer de vérification des ports démarré ({self.PORT_CHECK_INTERVAL}ms)")
 
     def initUI(self):
         # Configuration de la fenêtre principale
-        self.setWindowTitle('Terminal de Communication Série Avancé')
-        self.resize(900, 600)
+        self.setWindowTitle('Terminal de Communication Série Avancé')        
+        self.setMinimumSize(400, 400)  # Taille minimale
         
         # Initialiser la barre de statut
         self.statusBarWidget = QStatusBar()
@@ -80,9 +133,6 @@ class Terminal(QMainWindow):
         # Layout principal pour l'onglet terminal
         self.layout = QVBoxLayout(self.terminalTab)
         
-        # Créer la barre d'outils
-        self.setupToolbar()
-        
         # Panneau de configuration de connexion
         self.setupConnectionPanel()
         
@@ -91,6 +141,7 @@ class Terminal(QMainWindow):
         self.terminal.setReadOnly(True)  # Terminal en lecture seule
         font = QFont("Consolas", 12) # Police par défaut du terminal en taille 12
         self.terminal.setFont(font)
+        self.terminal.setMinimumHeight(200)  # Hauteur minimale pour le terminal
         self.layout.addWidget(self.terminal, 4)  # Donner plus d'espace au terminal
         
         # Stocker les valeurs par défaut
@@ -101,9 +152,6 @@ class Terminal(QMainWindow):
         # Panneau inférieur (saisie et options)
         self.setupInputPanel()
         
-        # Panneau des options d'affichage
-        self.setupDisplayOptionsPanel()
-        
         # Créer les menus
         self.setupMenus()
         
@@ -113,7 +161,20 @@ class Terminal(QMainWindow):
         # Onglet des commandes prédéfinies
         self.setupCommandsTab()
         
+        # Onglets des commandes AT (stockés pour pouvoir les afficher/masquer)
+        self.commandTabs = {}
+        
+        # Onglet des commandes AT ESP01
+        self.setupEspAtCommandsTab()
+        
+        # Onglet des commandes AT Bluetooth HC-05/HC-06
+        self.setupBtAtCommandsTab()
+        
+        # Charger la visibilité des onglets de commandes
+        self.loadCommandTabsVisibility()
+        
         self.show()
+        self.resize(600, 500)  # <-- Taille initiale plus large pour un meilleur affichage
 
     def setupToolbar(self):
         # Créer une barre d'outils
@@ -152,6 +213,11 @@ class Terminal(QMainWindow):
         portLayout.addWidget(self.portSelect)
         connectionLayout.addLayout(portLayout)
         
+        # Bouton de rafraîchissement
+        refreshBtn = QPushButton('Rafraîchir')
+        refreshBtn.clicked.connect(self.refreshPorts)
+        connectionLayout.addWidget(refreshBtn)
+        
         # Vitesse
         baudLayout = QHBoxLayout()
         baudLayout.addWidget(QLabel('Vitesse:'))
@@ -161,43 +227,47 @@ class Terminal(QMainWindow):
         baudLayout.addWidget(self.baudSelect)
         connectionLayout.addLayout(baudLayout)
         
-        # Bits de données
-        dataLayout = QHBoxLayout()
-        dataLayout.addWidget(QLabel('Bits:'))
-        self.dataSelect = QComboBox()
-        self.dataSelect.addItems(['5', '6', '7', '8'])
-        self.dataSelect.setCurrentText('8')
-        dataLayout.addWidget(self.dataSelect)
-        connectionLayout.addLayout(dataLayout)
-        
-        # Parité
-        parityLayout = QHBoxLayout()
-        parityLayout.addWidget(QLabel('Parité:'))
-        self.paritySelect = QComboBox()
-        self.paritySelect.addItems(['Aucune', 'Paire', 'Impaire'])
-        parityLayout.addWidget(self.paritySelect)
-        connectionLayout.addLayout(parityLayout)
-        
-        # Bits de stop
-        stopLayout = QHBoxLayout()
-        stopLayout.addWidget(QLabel('Stop:'))
-        self.stopSelect = QComboBox()
-        self.stopSelect.addItems(['1', '1.5', '2'])
-        stopLayout.addWidget(self.stopSelect)
-        connectionLayout.addLayout(stopLayout)
-        
         # Bouton de connexion
         self.connectBtn = QPushButton('Connecter')
+        self.connectBtn.setMinimumWidth(80)  # Largeur minimale pour le bouton
         self.connectBtn.clicked.connect(self.toggle_connection)
         connectionLayout.addWidget(self.connectBtn)
         
+        # Bouton pour effacer
+        self.clearBtn = QPushButton('Effacer')
+        self.clearBtn.clicked.connect(self.clearTerminal)
+        connectionLayout.addWidget(self.clearBtn)
+        
+        # Créer les widgets pour les options avancées (ils seront utilisés dans l'onglet avancé)
+        # Bits de données
+        self.dataSelect = QComboBox()
+        self.dataSelect.addItems(['5', '6', '7', '8'])
+        self.dataSelect.setCurrentText('8')
+        
+        # Parité
+        self.paritySelect = QComboBox()
+        self.paritySelect.addItems(['Aucune', 'Paire', 'Impaire'])
+        
+        # Bits de stop
+        self.stopSelect = QComboBox()
+        self.stopSelect.addItems(['1', '1.5', '2'])
+        
         # Flux de contrôle
-        flowLayout = QHBoxLayout()
-        flowLayout.addWidget(QLabel('Contrôle:'))
         self.flowSelect = QComboBox()
         self.flowSelect.addItems(['Aucun', 'XON/XOFF', 'RTS/CTS', 'DSR/DTR'])
-        flowLayout.addWidget(self.flowSelect)
-        connectionLayout.addLayout(flowLayout)
+        
+        # Créer les widgets pour les options d'affichage (ils seront utilisés dans l'onglet avancé)
+        # Format d'affichage
+        self.displayFormat = QComboBox()
+        self.displayFormat.addItems(['ASCII', 'HEX', 'Les deux'])
+        
+        # Défilement automatique
+        self.scrollCheckBox = QCheckBox('Défilement automatique')
+        self.scrollCheckBox.setChecked(True)
+        self.scrollCheckBox.stateChanged.connect(self.toggleAutoScroll)
+        
+        # Timestamp
+        self.timestampCheckBox = QCheckBox('Afficher timestamps')
         
         self.connectionGroup.setLayout(connectionLayout)
         self.layout.addWidget(self.connectionGroup)
@@ -220,36 +290,21 @@ class Terminal(QMainWindow):
 
         inputLayout.addLayout(sendLayout)
 
-        # Options d'envoi
-        optionsGroup = QGroupBox("Options d'envoi")
-        optionsLayout = QHBoxLayout() # Utiliser un layout horizontal
-
+        # Créer les widgets pour les options d'envoi (ils seront utilisés dans l'onglet avancé)
         # Format d'envoi (ASCII/HEX)
-        optionsLayout.addWidget(QLabel('Format :'))
         self.formatSelect = QComboBox()
         self.formatSelect.addItems(['ASCII', 'HEX'])
-        optionsLayout.addWidget(self.formatSelect)
-
+        
         # Fin de ligne
-        optionsLayout.addWidget(QLabel('Fin de ligne :'))
         self.nlcrChoice = QComboBox()
         self.nlcrChoice.addItems(['Aucun', 'NL', 'CR', 'NL+CR'])
-        optionsLayout.addWidget(self.nlcrChoice)
-
+        
         # Répétition
         self.repeatCheck = QCheckBox('Répéter')
-        optionsLayout.addWidget(self.repeatCheck)
-
+        
         # Intervalle
-        optionsLayout.addWidget(QLabel('Intervalle (ms) :'))
         self.repeatInterval = QLineEdit('1000')
         self.repeatInterval.setFixedWidth(60)
-        optionsLayout.addWidget(self.repeatInterval)
-        
-        optionsLayout.addStretch() # Ajouter un espace extensible à la fin
-
-        optionsGroup.setLayout(optionsLayout)
-        inputLayout.addWidget(optionsGroup)
 
         self.inputGroup.setLayout(inputLayout) # Utiliser self.inputGroup
         self.layout.addWidget(self.inputGroup) # Utiliser self.inputGroup
@@ -259,85 +314,91 @@ class Terminal(QMainWindow):
         self.repeat_timer.timeout.connect(self.sendData)
 
     def setupDisplayOptionsPanel(self):
-        # Panel pour les options d'affichage
-        displayGroup = QGroupBox("Options d'affichage")
-        displayLayout = QHBoxLayout()
-        
-        # Défilement automatique
-        self.scrollCheckBox = QCheckBox('Défilement automatique')
-        self.scrollCheckBox.setChecked(True)
-        self.scrollCheckBox.stateChanged.connect(self.toggleAutoScroll)  # Connecter à la méthode
-        displayLayout.addWidget(self.scrollCheckBox)
-        
-        # Timestamp
-        self.timestampCheckBox = QCheckBox('Afficher timestamps')
-        displayLayout.addWidget(self.timestampCheckBox)
-        
-        # Format des données reçues
-        displayLayout.addWidget(QLabel('Format d\'affichage:'))
-        self.displayFormat = QComboBox()
-        self.displayFormat.addItems(['ASCII', 'HEX', 'Les deux'])
-        displayLayout.addWidget(self.displayFormat)
-        
-        # Bouton pour effacer
-        self.clearBtn = QPushButton('Effacer')
-        self.clearBtn.clicked.connect(self.clearTerminal)
-        displayLayout.addWidget(self.clearBtn)
-        
-        displayGroup.setLayout(displayLayout)
-        self.layout.addWidget(displayGroup)
+        # Cette méthode est maintenant vide car les options d'affichage ont été déplacées
+        # vers l'onglet des paramètres avancés
+        pass
 
     def setupMenus(self):
-        # Menu Fichier
-        fileMenu = self.menuBar().addMenu('Fichier')
+        # Menu Connexion
+        connectionMenu = self.menuBar().addMenu('Connexion')
         
-        # Enregistrer le contenu du terminal
-        saveAction = QAction('Enregistrer le terminal...', self)
-        saveAction.triggered.connect(self.saveTerminalContent)
-        fileMenu.addAction(saveAction)
+        # Connecter/Déconnecter
+        connectAction = QAction('Connecter/Déconnecter', self)
+        connectAction.setShortcut('Ctrl+K')
+        connectAction.triggered.connect(self.toggle_connection)
+        connectionMenu.addAction(connectAction)
         
-        # Démarrer/arrêter l'enregistrement
-        self.logFileAction = QAction('Démarrer enregistrement...', self)
-        self.logFileAction.triggered.connect(self.startLogging)
-        fileMenu.addAction(self.logFileAction)
+        # Rafraîchir les ports
+        refreshAction = QAction('Rafraîchir les ports', self)
+        refreshAction.triggered.connect(self.refreshPorts)
+        connectionMenu.addAction(refreshAction)
         
-        fileMenu.addSeparator()
+        connectionMenu.addSeparator()
         
         # Quitter
         exitAction = QAction('Quitter', self)
         exitAction.triggered.connect(self.close)
-        fileMenu.addAction(exitAction)
+        connectionMenu.addAction(exitAction)
         
-        # Menu Edition
-        editMenu = self.menuBar().addMenu('Edition')
+        # Menu Terminal
+        terminalMenu = self.menuBar().addMenu('Terminal')
+        
+        # Effacer le terminal
+        clearAction = QAction('Effacer le terminal', self)
+        clearAction.setShortcut('Ctrl+C')
+        clearAction.triggered.connect(self.clearTerminal)
+        terminalMenu.addAction(clearAction)
+        
+        # Enregistrer le contenu du terminal
+        saveAction = QAction('Enregistrer le contenu...', self)
+        saveAction.setShortcut('Ctrl+S')
+        saveAction.triggered.connect(self.saveTerminalContent)
+        terminalMenu.addAction(saveAction)
+        
+        # Démarrer/arrêter l'enregistrement
+        self.logFileAction = QAction('Démarrer enregistrement...', self)
+        self.logFileAction.setShortcut('Ctrl+L')
+        self.logFileAction.triggered.connect(self.startLogging)
+        terminalMenu.addAction(self.logFileAction)
+        
+        terminalMenu.addSeparator()
         
         # Copier
         copyAction = QAction('Copier', self)
         copyAction.triggered.connect(self.copyText)
-        editMenu.addAction(copyAction)
+        terminalMenu.addAction(copyAction)
         
         # Coller
         pasteAction = QAction('Coller', self)
         pasteAction.triggered.connect(self.pasteText)
-        editMenu.addAction(pasteAction)
+        terminalMenu.addAction(pasteAction)
         
-        # Menu Vue
-        viewMenu = self.menuBar().addMenu('Vue')
+        # Menu Affichage
+        viewMenu = self.menuBar().addMenu('Affichage')
         
-        # Changer la police
-        self.fontAction = QAction('Changer la police', self)
-        self.fontAction.triggered.connect(self.changeFont)
-        viewMenu.addAction(self.fontAction)
+        # Masquer/Afficher le panneau d'envoi
+        self.toggleSendPanelAction = QAction('Afficher le panneau d\'envoi', self, checkable=True)
+        self.toggleSendPanelAction.setShortcut('Ctrl+T')
+        self.toggleSendPanelAction.setChecked(True) # Visible par défaut
+        self.toggleSendPanelAction.triggered.connect(self.toggleSendPanelVisibility)
+        viewMenu.addAction(self.toggleSendPanelAction)
         
-        # Changer la couleur du texte
-        self.textColorAction = QAction('Couleur du texte', self)
-        self.textColorAction.triggered.connect(self.changeTextColor)
-        viewMenu.addAction(self.textColorAction)
+        # Sous-menu des onglets
+        tabsMenu = viewMenu.addMenu('Onglets')
         
-        # Changer la couleur du fond
-        self.bgColorAction = QAction('Couleur du fond', self)
-        self.bgColorAction.triggered.connect(self.changeBgColor)
-        viewMenu.addAction(self.bgColorAction)
+        # Onglet ESP01
+        self.espTabAction = QAction('Commandes AT ESP01', self, checkable=True)
+        self.espTabAction.setChecked(True)  # Visible par défaut
+        self.espTabAction.triggered.connect(lambda checked: self.toggleCommandTab('esp', checked))
+        tabsMenu.addAction(self.espTabAction)
+        
+        # Onglet Bluetooth
+        self.btTabAction = QAction('Commandes AT Bluetooth', self, checkable=True)
+        self.btTabAction.setChecked(True)  # Visible par défaut
+        self.btTabAction.triggered.connect(lambda checked: self.toggleCommandTab('bt', checked))
+        tabsMenu.addAction(self.btTabAction)
+        
+        viewMenu.addSeparator()
         
         # Sous-menu des thèmes
         themesMenu = viewMenu.addMenu('Thèmes')
@@ -355,19 +416,29 @@ class Terminal(QMainWindow):
         hackerThemeAction.triggered.connect(lambda: self.applyTheme('hacker'))
         themesMenu.addAction(hackerThemeAction)
         
+        # Sous-menu de personnalisation
+        customizeMenu = viewMenu.addMenu('Personnaliser')
+        
+        # Changer la police
+        fontAction = QAction('Changer la police', self)
+        fontAction.triggered.connect(self.changeFont)
+        customizeMenu.addAction(fontAction)
+        
+        # Changer la couleur du texte
+        textColorAction = QAction('Couleur du texte', self)
+        textColorAction.triggered.connect(self.changeTextColor)
+        customizeMenu.addAction(textColorAction)
+        
+        # Changer la couleur du fond
+        bgColorAction = QAction('Couleur du fond', self)
+        bgColorAction.triggered.connect(self.changeBgColor)
+        customizeMenu.addAction(bgColorAction)
+        
         # Réinitialiser la vue
-        resetViewAction = QAction('Réinitialiser la vue', self)
+        resetViewAction = QAction('Réinitialiser l\'apparence', self)
         resetViewAction.setToolTip("Réinitialise l'apparence au thème sombre par défaut")
         resetViewAction.triggered.connect(self.resetConfig)
         viewMenu.addAction(resetViewAction)
-        
-        viewMenu.addSeparator()
-        
-        # Masquer/Afficher le panneau d'envoi
-        self.toggleSendPanelAction = QAction('Afficher le panneau d\'envoi', self, checkable=True)
-        self.toggleSendPanelAction.setChecked(True) # Visible par défaut
-        self.toggleSendPanelAction.triggered.connect(self.toggleSendPanelVisibility)
-        viewMenu.addAction(self.toggleSendPanelAction)
         
         # Menu Outils
         toolsMenu = self.menuBar().addMenu('Outils')
@@ -385,6 +456,11 @@ class Terminal(QMainWindow):
         # Menu Aide
         helpMenu = self.menuBar().addMenu('Aide')
         
+        # Raccourcis clavier
+        shortcutsAction = QAction('Raccourcis clavier', self)
+        shortcutsAction.triggered.connect(self.showShortcuts)
+        helpMenu.addAction(shortcutsAction)
+        
         # À propos
         aboutAction = QAction('À propos', self)
         aboutAction.triggered.connect(self.showAbout)
@@ -396,9 +472,97 @@ class Terminal(QMainWindow):
         self.tabWidget.addTab(self.advancedTab, "Paramètres avancés")
         advancedLayout = QVBoxLayout(self.advancedTab)
         
+        # Groupe pour les options d'envoi
+        sendGroup = QGroupBox("Options d'envoi")
+        sendGroup.setCheckable(True)
+        sendGroup.setChecked(True)
+        sendLayout = QGridLayout()
+        sendWidget = QWidget()
+        sendWidget.setLayout(sendLayout)
+        
+        # Format d'envoi (ASCII/HEX)
+        sendLayout.addWidget(QLabel('Format :'), 0, 0)
+        sendLayout.addWidget(self.formatSelect, 0, 1)
+        
+        # Fin de ligne
+        sendLayout.addWidget(QLabel('Fin de ligne :'), 0, 2)
+        sendLayout.addWidget(self.nlcrChoice, 0, 3)
+        
+        # Répétition
+        sendLayout.addWidget(self.repeatCheck, 1, 0)
+        
+        # Intervalle
+        sendLayout.addWidget(QLabel('Intervalle (ms) :'), 1, 2)
+        sendLayout.addWidget(self.repeatInterval, 1, 3)
+        
+        sendGroupLayout = QVBoxLayout()
+        sendGroupLayout.addWidget(sendWidget)
+        sendGroup.setLayout(sendGroupLayout)
+        advancedLayout.addWidget(sendGroup)
+        sendGroup.toggled.connect(lambda checked: sendWidget.setVisible(checked))
+        
+        # Groupe pour les options d'affichage
+        displayGroup = QGroupBox("Options d'affichage")
+        displayGroup.setCheckable(True)
+        displayGroup.setChecked(True)
+        displayLayout = QGridLayout()
+        displayWidget = QWidget()
+        displayWidget.setLayout(displayLayout)
+        
+        # Format des données reçues
+        displayLayout.addWidget(QLabel('Format d\'affichage:'), 0, 0)
+        displayLayout.addWidget(self.displayFormat, 0, 1)
+        
+        # Défilement automatique
+        displayLayout.addWidget(self.scrollCheckBox, 1, 0, 1, 2)
+        
+        # Timestamp
+        displayLayout.addWidget(self.timestampCheckBox, 2, 0, 1, 2)
+        
+        displayGroupLayout = QVBoxLayout()
+        displayGroupLayout.addWidget(displayWidget)
+        displayGroup.setLayout(displayGroupLayout)
+        advancedLayout.addWidget(displayGroup)
+        displayGroup.toggled.connect(lambda checked: displayWidget.setVisible(checked))
+        
+        # Groupe pour les paramètres de connexion avancés
+        serialGroup = QGroupBox("Paramètres de connexion avancés")
+        serialGroup.setCheckable(True)
+        serialGroup.setChecked(False)
+        serialLayout = QGridLayout()
+        serialWidget = QWidget()
+        serialWidget.setLayout(serialLayout)
+        
+        # Bits de données
+        serialLayout.addWidget(QLabel('Bits de données:'), 0, 0)
+        serialLayout.addWidget(self.dataSelect, 0, 1)
+        
+        # Parité
+        serialLayout.addWidget(QLabel('Parité:'), 0, 2)
+        serialLayout.addWidget(self.paritySelect, 0, 3)
+        
+        # Bits de stop
+        serialLayout.addWidget(QLabel('Bits de stop:'), 1, 0)
+        serialLayout.addWidget(self.stopSelect, 1, 1)
+        
+        # Flux de contrôle
+        serialLayout.addWidget(QLabel('Contrôle de flux:'), 1, 2)
+        serialLayout.addWidget(self.flowSelect, 1, 3)
+        
+        serialGroupLayout = QVBoxLayout()
+        serialGroupLayout.addWidget(serialWidget)
+        serialGroup.setLayout(serialGroupLayout)
+        advancedLayout.addWidget(serialGroup)
+        serialGroup.toggled.connect(lambda checked: serialWidget.setVisible(checked))
+        serialWidget.setVisible(False)
+        
         # Groupe pour les paramètres du terminal
         terminalGroup = QGroupBox("Paramètres du terminal")
+        terminalGroup.setCheckable(True)
+        terminalGroup.setChecked(False)
         terminalParamsLayout = QVBoxLayout()
+        terminalWidget = QWidget()
+        terminalWidget.setLayout(terminalParamsLayout)
         
         # Taille du buffer
         bufferLayout = QHBoxLayout()
@@ -420,12 +584,20 @@ class Terminal(QMainWindow):
         self.enableFilterCheck = QCheckBox("Activer le filtre")
         terminalParamsLayout.addWidget(self.enableFilterCheck)
         
-        terminalGroup.setLayout(terminalParamsLayout)
+        terminalGroupLayout = QVBoxLayout()
+        terminalGroupLayout.addWidget(terminalWidget)
+        terminalGroup.setLayout(terminalGroupLayout)
         advancedLayout.addWidget(terminalGroup)
+        terminalGroup.toggled.connect(lambda checked: terminalWidget.setVisible(checked))
+        terminalWidget.setVisible(False)
         
         # Groupe pour les paramètres de débogage
         debugGroup = QGroupBox("Débogage")
+        debugGroup.setCheckable(True)
+        debugGroup.setChecked(False)
         debugLayout = QVBoxLayout()
+        debugWidget = QWidget()
+        debugWidget.setLayout(debugLayout)
         
         # Afficher les octets bruts
         self.showRawBytesCheck = QCheckBox("Afficher les octets bruts")
@@ -435,12 +607,20 @@ class Terminal(QMainWindow):
         self.showTimingCheck = QCheckBox("Afficher les délais entre les trames")
         debugLayout.addWidget(self.showTimingCheck)
         
-        debugGroup.setLayout(debugLayout)
+        debugGroupLayout = QVBoxLayout()
+        debugGroupLayout.addWidget(debugWidget)
+        debugGroup.setLayout(debugGroupLayout)
         advancedLayout.addWidget(debugGroup)
+        debugGroup.toggled.connect(lambda checked: debugWidget.setVisible(checked))
+        debugWidget.setVisible(False)
         
         # Groupe pour les paramètres de sauvegarde
         saveGroup = QGroupBox("Sauvegarde automatique")
+        saveGroup.setCheckable(True)
+        saveGroup.setChecked(False)
         saveLayout = QVBoxLayout()
+        saveWidget = QWidget()
+        saveWidget.setLayout(saveLayout)
         
         # Activation de la sauvegarde automatique
         self.autoSaveCheck = QCheckBox("Activer la sauvegarde automatique")
@@ -456,8 +636,12 @@ class Terminal(QMainWindow):
         folderLayout.addWidget(browseBtn)
         saveLayout.addLayout(folderLayout)
         
-        saveGroup.setLayout(saveLayout)
+        saveGroupLayout = QVBoxLayout()
+        saveGroupLayout.addWidget(saveWidget)
+        saveGroup.setLayout(saveGroupLayout)
         advancedLayout.addWidget(saveGroup)
+        saveGroup.toggled.connect(lambda checked: saveWidget.setVisible(checked))
+        saveWidget.setVisible(False)
         
         # Boutons de sauvegarde/restauration des paramètres
         btnLayout = QHBoxLayout()
@@ -499,6 +683,10 @@ class Terminal(QMainWindow):
         loadCommandsBtn.clicked.connect(self.loadCommands)
         btnLayout.addWidget(loadCommandsBtn)
         
+        clearCommandsBtn = QPushButton("Effacer les commandes")
+        clearCommandsBtn.clicked.connect(self.clearCommands)
+        btnLayout.addWidget(clearCommandsBtn)
+        
         commandsLayout.addLayout(btnLayout)
         
         # Shortcuts des commandes
@@ -521,11 +709,14 @@ class Terminal(QMainWindow):
         self.shortcutConnect = QShortcut(QKeySequence("Ctrl+K"), self)
         self.shortcutConnect.activated.connect(self.toggle_connection)
         
-        self.shortcutClear = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.shortcutClear = QShortcut(QKeySequence("Ctrl+C"), self)
         self.shortcutClear.activated.connect(self.clearTerminal)
         
         self.shortcutSave = QShortcut(QKeySequence("Ctrl+S"), self)
         self.shortcutSave.activated.connect(self.saveTerminalContent)
+        
+        self.shortcutLog = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.shortcutLog.activated.connect(self.toggle_logging)
         
         # Historique des commandes (flèches haut/bas)
         self.shortcutUp = QShortcut(QKeySequence("Up"), self.inputField)
@@ -550,11 +741,23 @@ class Terminal(QMainWindow):
 
     def checkPorts(self):
         # Vérifier si de nouveaux ports sont disponibles sans changer la sélection actuelle
-        current_ports = set([port.device for port in serial.tools.list_ports.comports()])
-        port_items = set([self.portSelect.itemText(i) for i in range(self.portSelect.count())])
-        
-        if current_ports != port_items:
-            self.refreshPorts()
+        try:
+            current_ports = set([port.device for port in serial.tools.list_ports.comports()])
+            port_items = set([self.portSelect.itemText(i) for i in range(self.portSelect.count())])
+            
+            # Vérifier si le port actuellement connecté est toujours disponible
+            if self.serial_port and hasattr(self.serial_port, 'port'):
+                connected_port = self.serial_port.port
+                if connected_port not in current_ports and self.serial_port.is_open:
+                    logger.info(f"Port {connected_port} déconnecté, fermeture de la connexion")
+                    # Appeler handleDisconnect pour éviter les problèmes de thread
+                    self.handleDisconnect()
+            
+            if current_ports != port_items:
+                self.refreshPorts()
+        except Exception as e:
+            logger.error(f"Erreur lors de la vérification des ports: {str(e)}")
+            # Ne pas planter l'application en cas d'erreur
 
     def toggle_connection(self):
         if self.serial_port and self.serial_port.is_open:
@@ -563,14 +766,62 @@ class Terminal(QMainWindow):
             self.connect()
 
     def connect(self):
+        """
+        Établit une connexion avec le port série sélectionné en utilisant les paramètres configurés.
+        """
         port = self.portSelect.currentText()
         if not port:
             self.showMessage("Aucun port série disponible. Vérifiez les connexions.")
             return
             
-        baud = int(self.baudSelect.currentText())
+        try:
+            # Récupérer tous les paramètres de connexion
+            serial_params = self._get_serial_parameters(port)
+            
+            # Réinitialiser les compteurs RX/TX à la connexion
+            self.rx_bytes_count = 0
+            self.tx_bytes_count = 0
+            self.updateStatusBar()
+            
+            # Créer l'objet Serial avec les paramètres
+            self.serial_port = serial.Serial(**serial_params)
+            
+            # Afficher les informations de connexion
+            port_info = f"{port} ({serial_params['baudrate']} bauds, {serial_params['bytesize']}{serial_params['parity']}{serial_params['stopbits']})"
+            self.appendFormattedText(f'[Système] Connecté à {port_info}\n', QColor("green"))
+            
+            # Démarrer le thread de lecture
+            self.read_thread_running = True
+            self.read_thread = threading.Thread(target=self.readData)
+            self.read_thread.daemon = True
+            self.read_thread.start()
+            
+            # Mettre à jour l'interface
+            self.connectBtn.setText('Déconnecter')
+            self.statusBarWidget.showMessage(f"Connecté à {port}", 3000)
+                
+        except serial.SerialException as e:
+            # Erreur spécifique à PySerial lors de la connexion
+            self.showMessage(f'Erreur de connexion au port série ({port}): {str(e)}', error=True)
+        except FileNotFoundError:
+            # Si le port n'existe pas (peut arriver sur certains systèmes)
+            self.showMessage(f'Erreur: Le port série {port} n\'a pas été trouvé.', error=True)
+        except Exception as e:
+            # Autres erreurs inattendues
+            self.showMessage(f'Erreur inattendue: {str(e)}', error=True)
+            
+    def _get_serial_parameters(self, port):
+        """
+        Récupère tous les paramètres de connexion série à partir des sélections de l'utilisateur.
         
-        # Configurer les paramètres avancés
+        Args:
+            port (str): Port série à utiliser
+            
+        Returns:
+            dict: Dictionnaire des paramètres pour serial.Serial
+        """
+        # Paramètres de base
+        baud = int(self.baudSelect.currentText())
         data_bits = int(self.dataSelect.currentText())
         
         # Convertir la parité sélectionnée en paramètre pour PySerial
@@ -590,126 +841,159 @@ class Terminal(QMainWindow):
         }
         flow_settings = flow_control_map[self.flowSelect.currentText()]
         
-        try:
-            # Réinitialiser les compteurs RX/TX à la connexion
-            self.rx_bytes_count = 0
-            self.tx_bytes_count = 0
-            self.updateStatusBar()
-            
-            self.serial_port = serial.Serial(
-                port=port, 
-                baudrate=baud,
-                bytesize=data_bits,
-                parity=parity,
-                stopbits=stop_bits,
-                timeout=0.1,
-                **flow_settings
-            )
-            
-            self.appendFormattedText(f'[Système] Connecté à {port} ({baud} bauds, {data_bits}{parity}{stop_bits})\n', QColor("green"))
-            self.read_thread_running = True
-            self.read_thread = threading.Thread(target=self.readData)
-            self.read_thread.daemon = True
-            self.read_thread.start()
-            
-            self.connectBtn.setText('Déconnecter')
-            self.connectAction.setText('Déconnecter')
-            self.statusBarWidget.showMessage(f"Connecté à {port}", 3000)
-            
-                
-        except serial.SerialException as e:
-            # Erreur spécifique à PySerial lors de la connexion
-            self.showMessage(f'Erreur de connexion au port série ({port}): {str(e)}', error=True)
-        except FileNotFoundError:
-            # Si le port n'existe pas (peut arriver sur certains systèmes)
-            self.showMessage(f'Erreur: Le port série {port} n\'a pas été trouvé.', error=True)
-        except Exception as e:
-            # Autres erreurs inattendues
-            self.showMessage(f'Erreur inattendue: {str(e)}', error=True)
+        # Construire le dictionnaire de paramètres
+        params = {
+            'port': port,
+            'baudrate': baud,
+            'bytesize': data_bits,
+            'parity': parity,
+            'stopbits': stop_bits,
+            'timeout': 0.1,
+            **flow_settings
+        }
+        
+        return params
 
-    def disconnect(self):
+    @pyqtSlot()
+    def disconnect(self) -> None:
+        """
+        Déconnecte le port série et nettoie les ressources associées.
+        """
         if self.serial_port:
+            logger.info(f"Déconnexion du port {self.serial_port.port if hasattr(self.serial_port, 'port') else 'inconnu'}")
+            
+            # Arrêter le thread de lecture
             self.read_thread_running = False
+            
             if self.read_thread:
                 # Attendre un peu pour que le thread se termine proprement
                 if self.read_thread.is_alive():
-                    self.read_thread.join(0.5)
+                    logger.debug("Attente de la fin du thread de lecture")
+                    try:
+                        self.read_thread.join(0.5)
+                    except RuntimeError:
+                        # Ignorer les erreurs si le thread ne peut pas être joint
+                        pass
                     
-            if self.serial_port.is_open:
-                self.serial_port.close()
-                
-            self.serial_port = None
-            self.read_thread = None
+            # Fermer le port série en utilisant un bloc try-finally pour garantir la fermeture
+            try:
+                if self.serial_port and hasattr(self.serial_port, 'is_open') and self.serial_port.is_open:
+                    try:
+                        self.serial_port.close()
+                        logger.debug("Port série fermé avec succès")
+                    except (serial.SerialException, IOError, OSError) as e:
+                        logger.error(f"Erreur lors de la fermeture du port série: {str(e)}")
+            except Exception as e:
+                logger.error(f"Erreur inattendue lors de la fermeture du port série: {str(e)}")
+            finally:
+                self.serial_port = None
+                self.read_thread = None
             
             # Si on avait un enregistrement en cours, le fermer
             self.stopLogging()
             
             # Arrêter le timer d'envoi répété s'il est actif
             if self.repeat_timer.isActive():
+                logger.debug("Arrêt du timer d'envoi répété")
                 self.repeat_timer.stop()
                 self.repeatCheck.setChecked(False)
                 
+            # Mettre à jour l'interface
             self.appendFormattedText('[Système] Déconnecté\n', QColor("red"))
             self.connectBtn.setText('Connecter')
-            self.connectAction.setText('Connecter')
             self.statusBarWidget.showMessage("Déconnecté", 3000)
         else:
+            logger.warning("Tentative de déconnexion sans connexion active")
             self.appendFormattedText('[Système] Aucune connexion active\n', QColor("orange"))
 
+    @pyqtSlot()
+    def handleDisconnect(self):
+        """
+        Méthode slot pour gérer la déconnexion depuis un thread différent.
+        """
+        self.disconnect()
+    
     def readData(self):
+        """
+        Méthode exécutée dans un thread séparé pour lire les données du port série.
+        Collecte les données et les envoie pour traitement.
+        """
         last_time = datetime.now()
         buffer = bytearray()
+        timeout_seconds = 0.1  # Timeout en secondes
+        thread_sleep = 0.01    # Temps de pause pour éviter de saturer le CPU
         
         while self.read_thread_running and self.serial_port and self.serial_port.is_open:
             try:
+                # Vérifier si le port est toujours valide
+                if not self.serial_port or not self.serial_port.is_open:
+                    break
+                
                 # Lire les données disponibles
-                if self.serial_port.in_waiting > 0:
-                    data = self.serial_port.read(self.serial_port.in_waiting)
-                    if data:
-                        # Ajouter au buffer
-                        buffer.extend(data)
-                        
-                        # Si on a une fin de ligne ou un timeout, traiter les données
-                        if b'\n' in buffer or (datetime.now() - last_time).total_seconds() > 0.1:
-                            self.processReceivedData(buffer)
-                            buffer = bytearray()
-                            last_time = datetime.now()
+                try:
+                    in_waiting = self.serial_port.in_waiting
+                except (serial.SerialException, IOError, OSError):
+                    # Port probablement déconnecté
+                    self._handle_serial_error("Port déconnecté ou inaccessible")
+                    break
+                    
+                if in_waiting > 0:
+                    try:
+                        data = self.serial_port.read(in_waiting)
+                        if data:
+                            # Ajouter au buffer
+                            buffer.extend(data)
+                            
+                            # Si on a une fin de ligne ou un timeout, traiter les données
+                            if b'\n' in buffer or (datetime.now() - last_time).total_seconds() > timeout_seconds:
+                                self.processReceivedData(buffer)
+                                buffer = bytearray()
+                                last_time = datetime.now()
+                    except (serial.SerialException, IOError, OSError):
+                        self._handle_serial_error("Erreur lors de la lecture des données")
+                        break
                 else:
                     # Pause courte pour éviter de saturer le CPU
-                    threading.Event().wait(0.01)
+                    threading.Event().wait(thread_sleep)
                     
                     # Si le buffer contient des données et qu'un certain temps s'est écoulé
-                    if buffer and (datetime.now() - last_time).total_seconds() > 0.1:
+                    if buffer and (datetime.now() - last_time).total_seconds() > timeout_seconds:
                         self.processReceivedData(buffer)
-                        # Mettre à jour le compteur RX (fait dans processReceivedData)
-                        # QMetaObject.invokeMethod(self, "updateStatusBar", Qt.QueuedConnection)
-                        # Note: L'appel est déplacé dans processReceivedData pour compter les octets traités
-                        
                         buffer = bytearray()
                         last_time = datetime.now()
                         
             except serial.SerialException as e:
-                QMetaObject.invokeMethod(
-                    self, 
-                    "appendFormattedText", 
-                    Qt.QueuedConnection, 
-                    Q_ARG(str, f'[Erreur] {str(e)}\n'), 
-                    Q_ARG(QColor, QColor("red"))
-                )
-                # En cas d'erreur, on tente de se déconnecter proprement
-                QMetaObject.invokeMethod(self, "disconnect", Qt.QueuedConnection)
+                self._handle_serial_error(f"Erreur série: {str(e)}")
                 break
             except Exception as e:
-                QMetaObject.invokeMethod(
-                    self, 
-                    "appendFormattedText", 
-                    Qt.QueuedConnection, 
-                    Q_ARG(str, f'[Erreur] Exception inattendue: {str(e)}\n'), 
-                    Q_ARG(QColor, QColor("red"))
-                )
+                self._handle_serial_error(f"Exception inattendue: {str(e)}")
                 break
+                
+    def _handle_serial_error(self, error_message):
+        """
+        Gère les erreurs de communication série.
+        
+        Args:
+            error_message (str): Message d'erreur à afficher
+        """
+        QMetaObject.invokeMethod(
+            self, 
+            "appendFormattedText", 
+            Qt.QueuedConnection, 
+            Q_ARG(str, f'[Erreur] {error_message}\n'), 
+            Q_ARG(QColor, QColor("red"))
+        )
+        # En cas d'erreur, on tente de se déconnecter proprement
+        # Utiliser une méthode slot spécifique pour éviter les erreurs de QMetaObject
+        QMetaObject.invokeMethod(self, "handleDisconnect", Qt.QueuedConnection)
 
     def processReceivedData(self, data):
+        """
+        Traite les données reçues du port série et les affiche dans le terminal.
+        
+        Args:
+            data (bytes): Données reçues du port série
+        """
         # Obtenir le format d'affichage sélectionné
         display_format = self.displayFormat.currentText()
         
@@ -722,50 +1006,24 @@ class Terminal(QMainWindow):
             # Préparer les données à afficher selon le format choisi
             if display_format == 'ASCII':
                 # Décoder en texte, en remplaçant les caractères non-imprimables
-                try:
-                    text_data = data.decode('utf-8', errors='replace')
-                except UnicodeDecodeError:
-                    text_data = data.decode('latin-1', errors='replace')
-                    
-                display_text = text_data
+                display_text = self._decode_data(data)
                 
             elif display_format == 'HEX':
                 # Afficher en hexadécimal
-                hex_data = ' '.join(f'{b:02X}' for b in data)
-                display_text = hex_data
+                display_text = ' '.join(f'{b:02X}' for b in data)
                 
             else:  # "Les deux"
                 # Afficher en ASCII et HEX
-                try:
-                    text_data = data.decode('utf-8', errors='replace')
-                except UnicodeDecodeError:
-                    text_data = data.decode('latin-1', errors='replace')
-                    
+                text_data = self._decode_data(data)
                 hex_data = ' '.join(f'{b:02X}' for b in data)
                 display_text = f"{text_data} [{hex_data}]"
             
-            # Afficher les timestamps si activé
-            if self.timestampCheckBox.isChecked():
-                now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                
-                # Afficher le délai entre les trames si activé
-                if self.showTimingCheck.isChecked() and self.last_receive_time:
-                    delta = datetime.now() - self.last_receive_time
-                    ms = delta.total_seconds() * 1000
-                    display_text = f"[{now} +{ms:.1f}ms] {display_text}"
-                else:
-                    display_text = f"[{now}] {display_text}"
-                    
-            self.last_receive_time = datetime.now()
+            # Ajouter les timestamps si activé
+            display_text = self._add_timestamp(display_text)
                 
             # Appliquer un filtre si activé
-            if self.enableFilterCheck.isChecked() and self.filterInput.text():
-                try:
-                    pattern = self.filterInput.text()
-                    if not re.search(pattern, display_text):
-                        return  # Ne pas afficher si ne correspond pas au filtre
-                except re.error:
-                    pass  # Ignorer les erreurs de regex
+            if not self._apply_filter(display_text):
+                return  # Ne pas afficher si filtré
             
             # Afficher en bleu pour les données reçues
             QMetaObject.invokeMethod(
@@ -789,9 +1047,58 @@ class Terminal(QMainWindow):
                 Q_ARG(str, f'[Erreur de traitement] {str(e)}\n'), 
                 Q_ARG(QColor, QColor("red"))
             )
+            
+    def _decode_data(self, data):
+        """Décode les données binaires en texte."""
+        try:
+            return data.decode('utf-8', errors='replace')
+        except UnicodeDecodeError:
+            return data.decode('latin-1', errors='replace')
+            
+    def _add_timestamp(self, text):
+        """Ajoute un timestamp au texte si l'option est activée."""
+        if not self.timestampCheckBox.isChecked():
+            return text
+            
+        now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        
+        # Afficher le délai entre les trames si activé
+        if self.showTimingCheck.isChecked() and hasattr(self, 'last_receive_time') and self.last_receive_time:
+            delta = datetime.now() - self.last_receive_time
+            ms = delta.total_seconds() * 1000
+            result = f"[{now} +{ms:.1f}ms] {text}"
+        else:
+            result = f"[{now}] {text}"
+            
+        self.last_receive_time = datetime.now()
+        return result
+        
+    def _apply_filter(self, text):
+        """
+        Applique un filtre au texte si l'option est activée.
+        
+        Returns:
+            bool: True si le texte doit être affiché, False sinon
+        """
+        if not self.enableFilterCheck.isChecked() or not self.filterInput.text():
+            return True
+            
+        try:
+            pattern = self.filterInput.text()
+            return bool(re.search(pattern, text))
+        except re.error:
+            # Ignorer les erreurs de regex
+            return True
 
     @pyqtSlot(str, QColor)
     def appendFormattedText(self, text, color=None):
+        """
+        Ajoute du texte formaté au terminal. Cette méthode est thread-safe.
+        
+        Args:
+            text (str): Texte à ajouter
+            color (QColor, optional): Couleur du texte
+        """
         # Mettre à jour l'interface depuis n'importe quel thread
         
         # Vérifier si la barre de défilement est déjà en bas AVANT d'ajouter du texte
@@ -811,10 +1118,12 @@ class Terminal(QMainWindow):
                 lines = current_text.split('\n')
                 new_text = '\n'.join(lines[-max_lines:])
                 self.terminal.setPlainText(new_text)
+                cursor = self.terminal.textCursor()  # Définir cursor ici pour éviter l'erreur
                 cursor.movePosition(QTextCursor.End)
             else:
                 cursor = self.terminal.textCursor() # Obtenir le curseur seulement si on ne modifie pas tout le texte
         except (ValueError, AttributeError):
+            cursor = self.terminal.textCursor()  # Définir cursor en cas d'erreur
             pass  # Ignorer si la taille du buffer n'est pas un nombre valide
             
         # Formater le texte avec la couleur spécifiée
@@ -839,9 +1148,14 @@ class Terminal(QMainWindow):
             # restaurer la position de la barre de défilement précédente.
             scrollbar.setValue(old_scroll_value)
 
-    def sendData(self):
+    def sendData(self) -> None:
+        """
+        Envoie les données saisies au port série.
+        Gère différents formats (ASCII/HEX) et options de fin de ligne.
+        """
         if not self.serial_port or not self.serial_port.is_open:
             self.appendFormattedText('[Erreur] Pas de connexion série active\n', QColor("red"))
+            logger.error("Tentative d'envoi sans connexion série active")
             return
             
         text = self.inputField.text()
@@ -869,19 +1183,12 @@ class Terminal(QMainWindow):
         eol = eol_map[eol_type]
         
         try:
-            if format_type == 'ASCII':
-                # Envoyer en mode texte
-                data = text.encode('utf-8') + eol
-            else:  # HEX
-                # Convertir la chaîne HEX en bytes
-                # Nettoyer l'entrée en supprimant les espaces et caractères non-hex
-                hex_text = ''.join(c for c in text if c.upper() in '0123456789ABCDEF')
-                if len(hex_text) % 2 != 0:
-                    hex_text += '0'  # Ajouter un 0 si nombre impair de caractères
-                data = bytes.fromhex(hex_text) + eol
+            # Préparer les données à envoyer
+            data = self._prepare_data_to_send(text, format_type, eol)
                 
             # Envoyer les données
-            self.serial_port.write(data)
+            bytes_written = self.serial_port.write(data)
+            logger.debug(f"Envoi de {bytes_written} octets sur {self.serial_port.port}")
             
             # Mettre à jour le compteur TX
             self.tx_bytes_count += len(data)
@@ -901,23 +1208,60 @@ class Terminal(QMainWindow):
                 self.log_file.flush()
             
             # Gérer l'envoi répété si activé
-            if self.repeatCheck.isChecked():
-                try:
-                    interval = int(self.repeatInterval.text())
-                    if not self.repeat_timer.isActive():
-                        self.repeat_timer.start(interval)
-                except ValueError:
-                    self.appendFormattedText('[Erreur] Intervalle non valide\n', QColor("red"))
-            else:
-                if self.repeat_timer.isActive():
-                    self.repeat_timer.stop()
-                
-            # Effacer le champ d'entrée sauf en mode répétition
-            if not self.repeatCheck.isChecked():
-                self.inputField.clear()
+            self._handle_repeat_send(text)
                 
         except Exception as e:
-            self.appendFormattedText(f'[Erreur d\'envoi] {str(e)}\n', QColor("red"))
+            error_msg = f'[Erreur d\'envoi] {str(e)}'
+            self.appendFormattedText(f'{error_msg}\n', QColor("red"))
+            logger.error(f"Erreur lors de l'envoi des données: {str(e)}", exc_info=True)
+            
+    def _prepare_data_to_send(self, text: str, format_type: str, eol: bytes) -> bytes:
+        """
+        Prépare les données à envoyer selon le format sélectionné.
+        
+        Args:
+            text: Texte à envoyer
+            format_type: Format d'envoi ('ASCII' ou 'HEX')
+            eol: Caractères de fin de ligne en bytes
+            
+        Returns:
+            bytes: Données prêtes à être envoyées
+        """
+        if format_type == 'ASCII':
+            # Envoyer en mode texte
+            return text.encode('utf-8') + eol
+        else:  # HEX
+            # Convertir la chaîne HEX en bytes
+            # Nettoyer l'entrée en supprimant les espaces et caractères non-hex
+            hex_text = ''.join(c for c in text if c.upper() in '0123456789ABCDEF')
+            if len(hex_text) % 2 != 0:
+                hex_text += '0'  # Ajouter un 0 si nombre impair de caractères
+            return bytes.fromhex(hex_text) + eol
+            
+    def _handle_repeat_send(self, text: str) -> None:
+        """
+        Gère l'envoi répété des données si l'option est activée.
+        
+        Args:
+            text: Texte qui a été envoyé
+        """
+        if self.repeatCheck.isChecked():
+            try:
+                interval = int(self.repeatInterval.text())
+                if not self.repeat_timer.isActive():
+                    logger.info(f"Démarrage de l'envoi répété toutes les {interval}ms")
+                    self.repeat_timer.start(interval)
+            except ValueError:
+                self.appendFormattedText('[Erreur] Intervalle non valide\n', QColor("red"))
+                logger.error("Intervalle d'envoi répété non valide")
+        else:
+            if self.repeat_timer.isActive():
+                logger.info("Arrêt de l'envoi répété")
+                self.repeat_timer.stop()
+            
+            # Effacer le champ d'entrée sauf en mode répétition
+            self.inputField.clear()
+            self.inputField.setFocus()
 
     def clearTerminal(self):
         self.terminal.clear()
@@ -950,8 +1294,20 @@ class Terminal(QMainWindow):
             self.stopLogging()
         else:
             self.startLogging()
+            
+        # Mettre à jour le texte du menu
+        if self.log_file:
+            self.logFileAction.setText("Arrêter enregistrement")
+        else:
+            self.logFileAction.setText("Démarrer enregistrement...")
 
     def startLogging(self, automatic=False):
+        """
+        Démarre l'enregistrement des données dans un fichier log.
+        
+        Args:
+            automatic (bool): Si True, utilise le chemin prédéfini dans les paramètres
+        """
         # Si déjà en train d'enregistrer, arrêter d'abord
         if self.log_file:
             self.stopLogging()
@@ -960,6 +1316,8 @@ class Terminal(QMainWindow):
             if automatic and self.savePathInput.text():
                 # En mode automatique, utiliser le chemin prédéfini
                 path = self.savePathInput.text()
+                if not os.path.isdir(path):
+                    os.makedirs(path, exist_ok=True)
                 filename = os.path.join(path, f"terminal_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
             else:
                 # Demander à l'utilisateur où enregistrer le fichier
@@ -970,12 +1328,15 @@ class Terminal(QMainWindow):
                 )
                 
             if filename:
-                self.log_file = open(filename, 'w', encoding='utf-8')
-                self.log_file.write(f"--- Log démarré le {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-                self.log_file.flush()
+                # Utiliser un gestionnaire de contexte pour ouvrir le fichier
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(f"--- Log démarré le {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                
+                # Garder le fichier ouvert pour l'écriture continue
+                self.log_file = open(filename, 'a', encoding='utf-8')
                 
                 self.appendFormattedText(f'[Système] Enregistrement démarré: {filename}\n', QColor("green"))
-                self.logAction.setText("Arrêter log")
+                self.logFileAction.setText("Arrêter enregistrement")
                 self.statusBarWidget.showMessage(f"Enregistrement en cours: {os.path.basename(filename)}")
         except Exception as e:
             self.showMessage(f"Erreur lors de l'enregistrement: {str(e)}", error=True)
@@ -986,7 +1347,7 @@ class Terminal(QMainWindow):
                 self.log_file.write(f"--- Log terminé le {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
                 self.log_file.close()
                 self.appendFormattedText('[Système] Enregistrement terminé\n', QColor("orange"))
-                self.logAction.setText("Démarrer log")
+                self.logFileAction.setText("Démarrer enregistrement...")
                 self.statusBarWidget.showMessage("Enregistrement terminé", 3000)
             except Exception as e:
                 self.showMessage(f"Erreur lors de la fermeture du log: {str(e)}", error=True)
@@ -994,19 +1355,25 @@ class Terminal(QMainWindow):
                 self.log_file = None
 
     def saveTerminalContent(self):
-        filename, _ = QFileDialog.getSaveFileName(
-            self, 'Enregistrer le contenu du terminal', 
-            f"terminal_contenu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            'Fichiers texte (*.txt);;Tous les fichiers (*.*)'
-        )
-        
-        if filename:
-            try:
+        """
+        Enregistre le contenu actuel du terminal dans un fichier texte.
+        """
+        try:
+            # Proposer un nom de fichier avec la date et l'heure actuelles
+            default_filename = f"terminal_contenu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            
+            filename, _ = QFileDialog.getSaveFileName(
+                self, 'Enregistrer le contenu du terminal', 
+                default_filename,
+                'Fichiers texte (*.txt);;Tous les fichiers (*.*)'
+            )
+            
+            if filename:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(self.terminal.toPlainText())
                 self.statusBarWidget.showMessage(f"Contenu enregistré dans {os.path.basename(filename)}", 3000)
-            except Exception as e:
-                self.showMessage(f"Erreur lors de l'enregistrement: {str(e)}", error=True)
+        except Exception as e:
+            self.showMessage(f"Erreur lors de l'enregistrement: {str(e)}", error=True)
 
     def copyText(self):
         self.terminal.copy()
@@ -1036,68 +1403,69 @@ class Terminal(QMainWindow):
             self.defaultBgColor = color
             self.settings.setValue("terminal/bgColor", color.name())
 
+    def get_light_palette(self):
+        palette = QPalette()
+        # Palette claire par défaut (Fusion)
+        return palette
+
+    def get_dark_palette(self):
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(53, 53, 53))
+        palette.setColor(QPalette.WindowText, Qt.white)
+        palette.setColor(QPalette.Base, QColor(42, 42, 42))
+        palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
+        palette.setColor(QPalette.ToolTipBase, Qt.white)
+        palette.setColor(QPalette.ToolTipText, Qt.white)
+        palette.setColor(QPalette.Text, Qt.white)
+        palette.setColor(QPalette.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ButtonText, Qt.white)
+        palette.setColor(QPalette.BrightText, Qt.red)
+        palette.setColor(QPalette.Link, QColor(42, 130, 218))
+        palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.HighlightedText, Qt.black)
+        return palette
+
+    def get_hacker_palette(self):
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(0, 0, 0))
+        palette.setColor(QPalette.WindowText, QColor(0, 255, 0))
+        palette.setColor(QPalette.Base, QColor(0, 0, 0))
+        palette.setColor(QPalette.Text, QColor(0, 255, 0))
+        palette.setColor(QPalette.Button, QColor(10, 30, 10))
+        palette.setColor(QPalette.ButtonText, QColor(0, 255, 0))
+        palette.setColor(QPalette.Highlight, QColor(0, 255, 0))
+        palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        return palette
+
     def applyTheme(self, theme):
-        app = QApplication.instance() # Obtenir l'instance de l'application
-        
+        """Applique un thème à l'application et au terminal."""
+        app = QApplication.instance()
+        app.setStyle(QStyleFactory.create('Fusion'))
+
         if theme == 'clair':
-            # Appliquer une palette claire standard
-            app.setStyle(QStyleFactory.create('Fusion')) # Assurer le style Fusion
-            light_palette = QPalette() # Créer une palette par défaut (généralement claire)
-            app.setPalette(light_palette)
-            
-            # Ajuster spécifiquement le terminal si nécessaire
+            palette = self.get_light_palette()
+            app.setPalette(palette)
             self.terminal.setFont(QFont("Consolas", 12))
-            self.terminal.setStyleSheet("background-color: white; color: black;") 
+            self.terminal.setStyleSheet("background-color: white; color: black;")
             self.defaultTextColor = QColor("black")
             self.defaultBgColor = QColor("white")
 
         elif theme == 'sombre':
-            # Réappliquer la palette sombre définie au démarrage
-            app.setStyle(QStyleFactory.create('Fusion'))
-            dark_palette = QPalette()
-            dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
-            dark_palette.setColor(QPalette.WindowText, Qt.white)
-            dark_palette.setColor(QPalette.Base, QColor(42, 42, 42)) 
-            dark_palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
-            dark_palette.setColor(QPalette.ToolTipBase, Qt.white)
-            dark_palette.setColor(QPalette.ToolTipText, Qt.white)
-            dark_palette.setColor(QPalette.Text, Qt.white) 
-            dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
-            dark_palette.setColor(QPalette.ButtonText, Qt.white)
-            dark_palette.setColor(QPalette.BrightText, Qt.red)
-            dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
-            dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-            dark_palette.setColor(QPalette.HighlightedText, Qt.black)
-            app.setPalette(dark_palette)
-            
-            # Ajuster le terminal
+            palette = self.get_dark_palette()
+            app.setPalette(palette)
             self.terminal.setFont(QFont("Consolas", 12))
-            self.terminal.setStyleSheet(f"background-color: {dark_palette.color(QPalette.Base).name()}; color: white;")
+            self.terminal.setStyleSheet(f"background-color: {palette.color(QPalette.Base).name()}; color: white;")
             self.defaultTextColor = QColor("white")
-            self.defaultBgColor = dark_palette.color(QPalette.Base)
+            self.defaultBgColor = palette.color(QPalette.Base)
 
         elif theme == 'hacker':
-            # Appliquer une palette hacker (noir/vert)
-            app.setStyle(QStyleFactory.create('Fusion'))
-            hacker_palette = QPalette()
-            hacker_palette.setColor(QPalette.Window, QColor(0, 0, 0))
-            hacker_palette.setColor(QPalette.WindowText, QColor(0, 255, 0))
-            # ... (définir d'autres couleurs si nécessaire, sinon elles héritent)
-            hacker_palette.setColor(QPalette.Base, QColor(0, 0, 0)) 
-            hacker_palette.setColor(QPalette.Text, QColor(0, 255, 0)) 
-            hacker_palette.setColor(QPalette.Button, QColor(10, 30, 10))
-            hacker_palette.setColor(QPalette.ButtonText, QColor(0, 255, 0))
-            hacker_palette.setColor(QPalette.Highlight, QColor(0, 255, 0))
-            hacker_palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
-            app.setPalette(hacker_palette)
-            
-            # Ajuster le terminal
+            palette = self.get_hacker_palette()
+            app.setPalette(palette)
             self.terminal.setFont(QFont("Courier New", 12, QFont.Bold))
-            self.terminal.setStyleSheet("background-color: black; color: rgb(0, 255, 0);") 
+            self.terminal.setStyleSheet("background-color: black; color: rgb(0, 255, 0);")
             self.defaultTextColor = QColor(0, 255, 0)
             self.defaultBgColor = QColor("black")
 
-        # Sauvegarder le thème
         self.settings.setValue("global/theme", theme)
 
     def resetConfig(self):
@@ -1127,13 +1495,30 @@ class Terminal(QMainWindow):
         dialog = DataConverter(self)
         dialog.exec_()
 
+    def showShortcuts(self):
+        """
+        Affiche une boîte de dialogue avec la liste des raccourcis clavier.
+        """
+        shortcuts_text = (
+            "Raccourcis clavier :\n\n"
+            "Ctrl+K : Connecter/Déconnecter\n"
+            "Ctrl+C : Effacer le terminal\n"
+            "Ctrl+S : Enregistrer le contenu du terminal\n"
+            "Ctrl+L : Démarrer/Arrêter l'enregistrement\n"
+            "Ctrl+T : Afficher/Masquer le panneau d'envoi\n"
+            "Flèche haut : Commande précédente\n"
+            "Flèche bas : Commande suivante\n"
+        )
+        
+        QMessageBox.information(self, "Raccourcis clavier", shortcuts_text)
+
     def showAbout(self):
         QMessageBox.about(
             self, 
             "À propos du Terminal Série",
             "Terminal de Communication Série Avancé v1.0\n\n"
             "Un outil complet pour la communication série avec de nombreuses fonctionnalités.\n\n"
-            "© 2025 Terminal Série"
+            "© Manu - 2025 - Terminal Série"
         )
 
     def browseSavePath(self):
@@ -1175,6 +1560,10 @@ class Terminal(QMainWindow):
         # Commandes prédéfinies
         self.settings.setValue("commands/list", self.commandsTextEdit.toPlainText())
         
+        # Visibilité des onglets
+        self.settings.setValue("tabs/esp_visible", self.espTabAction.isChecked())
+        self.settings.setValue("tabs/bt_visible", self.btTabAction.isChecked())
+        
         self.statusBarWidget.showMessage("Paramètres sauvegardés", 3000)
 
     def loadSettings(self):
@@ -1214,7 +1603,7 @@ class Terminal(QMainWindow):
         # Charger la visibilité du panneau d'envoi
         send_panel_visible = self.settings.value("display/sendPanelVisible", True, type=bool)
         self.inputGroup.setVisible(send_panel_visible)
-        self.toggleSendPanelAction.setChecked(send_panel_visible) # Mettre à jour l'état de l'action du menu
+        self.toggleSendPanelAction.setChecked(send_panel_visible) # Mettre à jour l'état de l'action
         
         # Paramètres d'envoi
         send_format = self.settings.value("send/format", "ASCII")
@@ -1262,19 +1651,77 @@ class Terminal(QMainWindow):
             self.restoreGeometry(geometry)
 
     def saveCommands(self):
+        """
+        Sauvegarde les commandes définies dans les paramètres.
+        Limite le nombre de commandes au maximum défini dans la configuration.
+        """
+        # Récupérer les commandes du TextEdit
+        commands_text = self.commandsTextEdit.toPlainText()
+        
+        # Limiter le nombre de commandes
+        commands = []
+        for line in commands_text.split('\n'):
+            line = line.strip()
+            if line and not line.startswith('#'):
+                try:
+                    name, cmd = line.split('=', 1)
+                    commands.append(line)
+                except ValueError:
+                    continue
+        
+        # Limiter au nombre maximum de commandes
+        if len(commands) > self.max_saved_commands:
+            commands = commands[:self.max_saved_commands]
+            limited_text = '\n'.join(commands)
+            self.commandsTextEdit.setPlainText(limited_text)
+            self.showMessage(f"Le nombre de commandes a été limité à {self.max_saved_commands}.")
+            logger.info(f"Nombre de commandes limité à {self.max_saved_commands}")
+            
         # Sauvegarder les commandes dans les paramètres
         self.settings.setValue("commands/list", self.commandsTextEdit.toPlainText())
         self.updateCommandButtons()
         self.statusBarWidget.showMessage("Commandes sauvegardées", 3000)
 
     def loadCommands(self):
-        # Charger les commandes depuis les paramètres
+        """
+        Charge les commandes depuis les paramètres.
+        """
         commands_text = self.settings.value("commands/list", "")
         self.commandsTextEdit.setPlainText(commands_text)
         self.updateCommandButtons()
         self.statusBarWidget.showMessage("Commandes chargées", 3000)
+        
+    def clearCommands(self):
+        """
+        Efface toutes les commandes sauvegardées.
+        """
+        # Demander confirmation avant d'effacer
+        reply = QMessageBox.question(
+            self, 
+            'Confirmation', 
+            'Êtes-vous sûr de vouloir effacer toutes les commandes ?',
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Effacer le contenu du TextEdit
+            self.commandsTextEdit.clear()
+            
+            # Effacer les commandes dans les paramètres
+            self.settings.remove("commands/list")
+            
+            # Mettre à jour les boutons
+            self.updateCommandButtons()
+            
+            self.statusBarWidget.showMessage("Commandes effacées", 3000)
+            logger.info("Toutes les commandes ont été effacées")
 
     def updateCommandButtons(self):
+        """
+        Met à jour les boutons de raccourcis pour les commandes sauvegardées.
+        Limite le nombre de boutons au maximum défini dans la configuration.
+        """
         # Effacer les boutons existants
         while self.shortcutButtonsLayout.count():
             item = self.shortcutButtonsLayout.takeAt(0)
@@ -1283,7 +1730,13 @@ class Terminal(QMainWindow):
         
         # Analyser les commandes définies
         text = self.commandsTextEdit.toPlainText()
+        command_count = 0
+        
         for line in text.split('\n'):
+            # Limiter au nombre maximum de commandes
+            if command_count >= self.max_saved_commands:
+                break
+                
             line = line.strip()
             if line and not line.startswith('#'):
                 try:
@@ -1297,14 +1750,21 @@ class Terminal(QMainWindow):
                     # Utiliser une fonction lambda avec une valeur par défaut pour capturer la valeur actuelle
                     btn.clicked.connect(lambda checked, cmd=cmd: self.executeCommand(cmd))
                     self.shortcutButtonsLayout.addWidget(btn)
+                    command_count += 1
                 except ValueError:
                     continue  # Ignorer les lignes mal formées
         
         # Ajouter un spacer à la fin pour l'alignement
         self.shortcutButtonsLayout.addStretch()
+        
+        # Afficher le nombre de commandes
+        if command_count > 0:
+            logger.debug(f"{command_count} commandes chargées dans les raccourcis")
 
     def executeCommand(self, cmd):
         self.inputField.setText(cmd)
+        # Basculer vers l'onglet Terminal
+        self.tabWidget.setCurrentWidget(self.terminalTab)
         if not self.repeatCheck.isChecked():  # Ne pas envoyer automatiquement en mode répétition
             self.sendData()
 
@@ -1312,6 +1772,206 @@ class Terminal(QMainWindow):
         is_visible = not self.inputGroup.isVisible()
         self.inputGroup.setVisible(is_visible)
         self.toggleSendPanelAction.setChecked(is_visible) # Mettre à jour l'état de l'action
+        
+    def setupEspAtCommandsTab(self):
+        """
+        Crée un onglet pour les commandes AT ESP01 avec des explications.
+        """
+        # Créer l'onglet
+        self.espAtTab = QWidget()
+        tabIndex = self.tabWidget.addTab(self.espAtTab, "Commandes AT ESP01")
+        self.commandTabs['esp'] = {'tab': self.espAtTab, 'index': tabIndex}
+        
+        # Layout principal
+        mainLayout = QVBoxLayout(self.espAtTab)
+        
+        # Texte d'explication
+        infoLabel = QLabel("Cliquez sur une commande pour l'insérer dans la barre d'envoi.")
+        infoLabel.setWordWrap(True)
+        mainLayout.addWidget(infoLabel)
+        
+        # Zone de défilement
+        scrollArea = QWidget()
+        scrollLayout = QVBoxLayout(scrollArea)
+        
+        # Parcourir les catégories de commandes
+        for category in ESP_AT_COMMANDS:
+            # Créer un groupe pour chaque catégorie
+            categoryGroup = QGroupBox(category["category"])
+            categoryGroup.setCheckable(True)
+            categoryGroup.setChecked(False)
+            
+            # Layout pour les commandes de cette catégorie
+            commandsLayout = QVBoxLayout()
+            commandsWidget = QWidget()
+            commandsWidget.setLayout(commandsLayout)
+            
+            # Ajouter chaque commande
+            for cmd in category["commands"]:
+                # Créer un layout pour chaque commande
+                cmdLayout = QVBoxLayout()
+                
+                # Bouton pour la commande
+                cmdBtn = QPushButton(cmd["command"])
+                cmdBtn.setStyleSheet("text-align: left; padding: 5px;")
+                cmdBtn.setToolTip(cmd["description"])
+                # Connecter le bouton à la méthode executeCommand
+                cmdBtn.clicked.connect(lambda checked, c=cmd["command"]: self.executeCommand(c))
+                cmdLayout.addWidget(cmdBtn)
+                
+                # Description de la commande
+                descLabel = QLabel(cmd["description"])
+                descLabel.setWordWrap(True)
+                descLabel.setStyleSheet("color: gray; margin-left: 10px;")
+                cmdLayout.addWidget(descLabel)
+                
+                # Ajouter un séparateur
+                cmdLayout.addWidget(QLabel(""))
+                
+                # Ajouter ce layout au layout de la catégorie
+                commandsLayout.addLayout(cmdLayout)
+            
+            # Configurer le groupe de catégorie
+            categoryLayout = QVBoxLayout()
+            categoryLayout.addWidget(commandsWidget)
+            categoryGroup.setLayout(categoryLayout)
+            
+            # Connecter le signal toggled pour afficher/masquer les commandes
+            categoryGroup.toggled.connect(lambda checked, w=commandsWidget: w.setVisible(checked))
+            commandsWidget.setVisible(False)
+            
+            # Ajouter le groupe au layout principal
+            scrollLayout.addWidget(categoryGroup)
+        
+        # Ajouter un espace extensible à la fin
+        scrollLayout.addStretch()
+        
+        # Créer une zone de défilement
+        scrollWidget = QScrollArea()
+        scrollWidget.setWidgetResizable(True)
+        scrollWidget.setWidget(scrollArea)
+        
+        # Ajouter la zone de défilement au layout principal
+        mainLayout.addWidget(scrollWidget)
+        
+    def setupBtAtCommandsTab(self):
+        """
+        Crée un onglet pour les commandes AT des modules Bluetooth HC-05/HC-06 avec des explications.
+        """
+        # Créer l'onglet
+        self.btAtTab = QWidget()
+        tabIndex = self.tabWidget.addTab(self.btAtTab, "Commandes AT Bluetooth")
+        self.commandTabs['bt'] = {'tab': self.btAtTab, 'index': tabIndex}
+        
+        # Layout principal
+        mainLayout = QVBoxLayout(self.btAtTab)
+        
+        # Texte d'explication
+        infoLabel = QLabel("Cliquez sur une commande pour l'insérer dans la barre d'envoi. Compatible avec les modules HC-05 et HC-06.")
+        infoLabel.setWordWrap(True)
+        mainLayout.addWidget(infoLabel)
+        
+        # Zone de défilement
+        scrollArea = QWidget()
+        scrollLayout = QVBoxLayout(scrollArea)
+        
+        # Parcourir les catégories de commandes
+        for category in BT_AT_COMMANDS:
+            # Créer un groupe pour chaque catégorie
+            categoryGroup = QGroupBox(category["category"])
+            categoryGroup.setCheckable(True)
+            categoryGroup.setChecked(False)
+            
+            # Layout pour les commandes de cette catégorie
+            commandsLayout = QVBoxLayout()
+            commandsWidget = QWidget()
+            commandsWidget.setLayout(commandsLayout)
+            
+            # Ajouter chaque commande
+            for cmd in category["commands"]:
+                # Créer un layout pour chaque commande
+                cmdLayout = QVBoxLayout()
+                
+                # Bouton pour la commande
+                cmdBtn = QPushButton(cmd["command"])
+                cmdBtn.setStyleSheet("text-align: left; padding: 5px;")
+                cmdBtn.setToolTip(cmd["description"])
+                # Connecter le bouton à la méthode executeCommand
+                cmdBtn.clicked.connect(lambda checked, c=cmd["command"]: self.executeCommand(c))
+                cmdLayout.addWidget(cmdBtn)
+                
+                # Description de la commande
+                descLabel = QLabel(cmd["description"])
+                descLabel.setWordWrap(True)
+                descLabel.setStyleSheet("color: gray; margin-left: 10px;")
+                cmdLayout.addWidget(descLabel)
+                
+                # Ajouter un séparateur
+                cmdLayout.addWidget(QLabel(""))
+                
+                # Ajouter ce layout au layout de la catégorie
+                commandsLayout.addLayout(cmdLayout)
+            
+            # Configurer le groupe de catégorie
+            categoryLayout = QVBoxLayout()
+            categoryLayout.addWidget(commandsWidget)
+            categoryGroup.setLayout(categoryLayout)
+            
+            # Connecter le signal toggled pour afficher/masquer les commandes
+            categoryGroup.toggled.connect(lambda checked, w=commandsWidget: w.setVisible(checked))
+            commandsWidget.setVisible(False)
+            
+            # Ajouter le groupe au layout principal
+            scrollLayout.addWidget(categoryGroup)
+        
+        # Ajouter un espace extensible à la fin
+        scrollLayout.addStretch()
+        
+        # Créer une zone de défilement
+        scrollWidget = QScrollArea()
+        scrollWidget.setWidgetResizable(True)
+        scrollWidget.setWidget(scrollArea)
+        
+        # Ajouter la zone de défilement au layout principal
+        mainLayout.addWidget(scrollWidget)
+        
+    def toggleCommandTab(self, tab_id, visible):
+        """
+        Affiche ou masque un onglet de commandes AT.
+        
+        Args:
+            tab_id (str): Identifiant de l'onglet ('esp' ou 'bt')
+            visible (bool): True pour afficher, False pour masquer
+        """
+        if tab_id in self.commandTabs:
+            tab_info = self.commandTabs[tab_id]
+            if visible:
+                # Si l'onglet n'est pas déjà présent, l'ajouter
+                if self.tabWidget.indexOf(tab_info['tab']) == -1:
+                    self.tabWidget.insertTab(tab_info['index'], tab_info['tab'], 
+                                           "Commandes AT ESP01" if tab_id == 'esp' else "Commandes AT Bluetooth")
+            else:
+                # Si l'onglet est présent, le retirer
+                index = self.tabWidget.indexOf(tab_info['tab'])
+                if index != -1:
+                    self.tabWidget.removeTab(index)
+            
+            # Sauvegarder l'état de visibilité
+            self.settings.setValue(f"tabs/{tab_id}_visible", visible)
+            
+    def loadCommandTabsVisibility(self):
+        """
+        Charge l'état de visibilité des onglets de commandes AT depuis les paramètres.
+        """
+        # Charger l'état de l'onglet ESP01
+        esp_visible = self.settings.value("tabs/esp_visible", True, type=bool)
+        self.espTabAction.setChecked(esp_visible)
+        self.toggleCommandTab('esp', esp_visible)
+        
+        # Charger l'état de l'onglet Bluetooth
+        bt_visible = self.settings.value("tabs/bt_visible", True, type=bool)
+        self.btTabAction.setChecked(bt_visible)
+        self.toggleCommandTab('bt', bt_visible)
 
     def closeEvent(self, event):
         # Déconnecter proprement
@@ -1341,17 +2001,13 @@ class Terminal(QMainWindow):
         self.statusRxTxLabel.setText(f"RX: {self.rx_bytes_count} | TX: {self.tx_bytes_count}")
 
 
-if __name__ == "__main__":
-    # Configuration de l'application avant de créer la fenêtre
-    app = QApplication(sys.argv)
-
-    # Définir la police par défaut pour toute l'application
-    default_font = QFont("Arial", 12)
-    app.setFont(default_font)
-
-    # Appliquer un style et une palette sombre
-    app.setStyle(QStyleFactory.create('Fusion'))
+def setup_dark_palette():
+    """
+    Crée et retourne une palette de couleurs sombre pour l'application.
     
+    Returns:
+        QPalette: Palette de couleurs sombre
+    """
     dark_palette = QPalette()
     dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
     dark_palette.setColor(QPalette.WindowText, Qt.white)
@@ -1366,7 +2022,34 @@ if __name__ == "__main__":
     dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
     dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
     dark_palette.setColor(QPalette.HighlightedText, Qt.black)
-    app.setPalette(dark_palette)
+    return dark_palette
 
+def setup_application():
+    """
+    Configure l'application avec les paramètres par défaut.
+    
+    Returns:
+        QApplication: L'application configurée
+    """
+    app = QApplication(sys.argv)
+
+    # Définir la police par défaut pour toute l'application
+    default_font = QFont("Arial", 12)
+    app.setFont(default_font)
+
+    # Appliquer un style et une palette sombre
+    app.setStyle(QStyleFactory.create('Fusion'))
+    app.setPalette(setup_dark_palette())
+    
+    return app
+
+if __name__ == "__main__":
+    # Configuration de l'application avant de créer la fenêtre
+    app = setup_application()
+    
+    # Créer et afficher la fenêtre principale
     terminal = Terminal()
+    
+    # Exécuter l'application
     sys.exit(app.exec_())
+    

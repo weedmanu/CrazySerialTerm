@@ -24,7 +24,8 @@ logger = logging.getLogger("CrazySerialTerm")
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
                              QTextEdit, QLineEdit, QMainWindow, QMenu, QAction, QFontDialog, QColorDialog, 
                              QMessageBox, QInputDialog, QStyleFactory, QCheckBox, QSpacerItem, QSizePolicy,
-                             QFileDialog, QToolBar, QStatusBar, QGroupBox, QTabWidget, QShortcut, QDialog, QGridLayout)
+                             QFileDialog, QToolBar, QStatusBar, QGroupBox, QTabWidget, QShortcut, QDialog, QGridLayout,
+                             QScrollArea)
 from PyQt5.QtGui import QColor, QTextCursor, QFont, QKeySequence, QIcon, QPalette, QTextCharFormat
 from PyQt5.QtCore import Qt, QMetaObject, Q_ARG, pyqtSlot, QTimer, QSettings
 
@@ -35,6 +36,8 @@ import serial.tools.list_ports
 # Modules locaux
 from checksum_calculator import ChecksumCalculator
 from data_converter import DataConverter
+from esp_at_commands import ESP_AT_COMMANDS
+from bt_at_commands import BT_AT_COMMANDS
 
 def resource_path(relative_path):
     """
@@ -108,7 +111,7 @@ class Terminal(QMainWindow):
     def initUI(self):
         # Configuration de la fenêtre principale
         self.setWindowTitle('Terminal de Communication Série Avancé')        
-        self.setMinimumWidth(500)  # Largeur minimale
+        self.setMinimumSize(400, 400)  # Taille minimale
         
         # Initialiser la barre de statut
         self.statusBarWidget = QStatusBar()
@@ -138,6 +141,7 @@ class Terminal(QMainWindow):
         self.terminal.setReadOnly(True)  # Terminal en lecture seule
         font = QFont("Consolas", 12) # Police par défaut du terminal en taille 12
         self.terminal.setFont(font)
+        self.terminal.setMinimumHeight(200)  # Hauteur minimale pour le terminal
         self.layout.addWidget(self.terminal, 4)  # Donner plus d'espace au terminal
         
         # Stocker les valeurs par défaut
@@ -157,8 +161,20 @@ class Terminal(QMainWindow):
         # Onglet des commandes prédéfinies
         self.setupCommandsTab()
         
+        # Onglets des commandes AT (stockés pour pouvoir les afficher/masquer)
+        self.commandTabs = {}
+        
+        # Onglet des commandes AT ESP01
+        self.setupEspAtCommandsTab()
+        
+        # Onglet des commandes AT Bluetooth HC-05/HC-06
+        self.setupBtAtCommandsTab()
+        
+        # Charger la visibilité des onglets de commandes
+        self.loadCommandTabsVisibility()
+        
         self.show()
-        self.resize(500, 500)  # <-- Place ceci après self.show()
+        self.resize(600, 500)  # <-- Taille initiale plus large pour un meilleur affichage
 
     def setupToolbar(self):
         # Créer une barre d'outils
@@ -213,6 +229,7 @@ class Terminal(QMainWindow):
         
         # Bouton de connexion
         self.connectBtn = QPushButton('Connecter')
+        self.connectBtn.setMinimumWidth(80)  # Largeur minimale pour le bouton
         self.connectBtn.clicked.connect(self.toggle_connection)
         connectionLayout.addWidget(self.connectBtn)
         
@@ -273,36 +290,21 @@ class Terminal(QMainWindow):
 
         inputLayout.addLayout(sendLayout)
 
-        # Options d'envoi
-        optionsGroup = QGroupBox("Options d'envoi")
-        optionsLayout = QHBoxLayout() # Utiliser un layout horizontal
-
+        # Créer les widgets pour les options d'envoi (ils seront utilisés dans l'onglet avancé)
         # Format d'envoi (ASCII/HEX)
-        optionsLayout.addWidget(QLabel('Format :'))
         self.formatSelect = QComboBox()
         self.formatSelect.addItems(['ASCII', 'HEX'])
-        optionsLayout.addWidget(self.formatSelect)
-
+        
         # Fin de ligne
-        optionsLayout.addWidget(QLabel('Fin de ligne :'))
         self.nlcrChoice = QComboBox()
         self.nlcrChoice.addItems(['Aucun', 'NL', 'CR', 'NL+CR'])
-        optionsLayout.addWidget(self.nlcrChoice)
-
+        
         # Répétition
         self.repeatCheck = QCheckBox('Répéter')
-        optionsLayout.addWidget(self.repeatCheck)
-
+        
         # Intervalle
-        optionsLayout.addWidget(QLabel('Intervalle (ms) :'))
         self.repeatInterval = QLineEdit('1000')
         self.repeatInterval.setFixedWidth(60)
-        optionsLayout.addWidget(self.repeatInterval)
-        
-        optionsLayout.addStretch() # Ajouter un espace extensible à la fin
-
-        optionsGroup.setLayout(optionsLayout)
-        inputLayout.addWidget(optionsGroup)
 
         self.inputGroup.setLayout(inputLayout) # Utiliser self.inputGroup
         self.layout.addWidget(self.inputGroup) # Utiliser self.inputGroup
@@ -381,6 +383,21 @@ class Terminal(QMainWindow):
         self.toggleSendPanelAction.triggered.connect(self.toggleSendPanelVisibility)
         viewMenu.addAction(self.toggleSendPanelAction)
         
+        # Sous-menu des onglets
+        tabsMenu = viewMenu.addMenu('Onglets')
+        
+        # Onglet ESP01
+        self.espTabAction = QAction('Commandes AT ESP01', self, checkable=True)
+        self.espTabAction.setChecked(True)  # Visible par défaut
+        self.espTabAction.triggered.connect(lambda checked: self.toggleCommandTab('esp', checked))
+        tabsMenu.addAction(self.espTabAction)
+        
+        # Onglet Bluetooth
+        self.btTabAction = QAction('Commandes AT Bluetooth', self, checkable=True)
+        self.btTabAction.setChecked(True)  # Visible par défaut
+        self.btTabAction.triggered.connect(lambda checked: self.toggleCommandTab('bt', checked))
+        tabsMenu.addAction(self.btTabAction)
+        
         viewMenu.addSeparator()
         
         # Sous-menu des thèmes
@@ -455,9 +472,42 @@ class Terminal(QMainWindow):
         self.tabWidget.addTab(self.advancedTab, "Paramètres avancés")
         advancedLayout = QVBoxLayout(self.advancedTab)
         
+        # Groupe pour les options d'envoi
+        sendGroup = QGroupBox("Options d'envoi")
+        sendGroup.setCheckable(True)
+        sendGroup.setChecked(True)
+        sendLayout = QGridLayout()
+        sendWidget = QWidget()
+        sendWidget.setLayout(sendLayout)
+        
+        # Format d'envoi (ASCII/HEX)
+        sendLayout.addWidget(QLabel('Format :'), 0, 0)
+        sendLayout.addWidget(self.formatSelect, 0, 1)
+        
+        # Fin de ligne
+        sendLayout.addWidget(QLabel('Fin de ligne :'), 0, 2)
+        sendLayout.addWidget(self.nlcrChoice, 0, 3)
+        
+        # Répétition
+        sendLayout.addWidget(self.repeatCheck, 1, 0)
+        
+        # Intervalle
+        sendLayout.addWidget(QLabel('Intervalle (ms) :'), 1, 2)
+        sendLayout.addWidget(self.repeatInterval, 1, 3)
+        
+        sendGroupLayout = QVBoxLayout()
+        sendGroupLayout.addWidget(sendWidget)
+        sendGroup.setLayout(sendGroupLayout)
+        advancedLayout.addWidget(sendGroup)
+        sendGroup.toggled.connect(lambda checked: sendWidget.setVisible(checked))
+        
         # Groupe pour les options d'affichage
         displayGroup = QGroupBox("Options d'affichage")
+        displayGroup.setCheckable(True)
+        displayGroup.setChecked(True)
         displayLayout = QGridLayout()
+        displayWidget = QWidget()
+        displayWidget.setLayout(displayLayout)
         
         # Format des données reçues
         displayLayout.addWidget(QLabel('Format d\'affichage:'), 0, 0)
@@ -469,12 +519,19 @@ class Terminal(QMainWindow):
         # Timestamp
         displayLayout.addWidget(self.timestampCheckBox, 2, 0, 1, 2)
         
-        displayGroup.setLayout(displayLayout)
+        displayGroupLayout = QVBoxLayout()
+        displayGroupLayout.addWidget(displayWidget)
+        displayGroup.setLayout(displayGroupLayout)
         advancedLayout.addWidget(displayGroup)
+        displayGroup.toggled.connect(lambda checked: displayWidget.setVisible(checked))
         
         # Groupe pour les paramètres de connexion avancés
         serialGroup = QGroupBox("Paramètres de connexion avancés")
+        serialGroup.setCheckable(True)
+        serialGroup.setChecked(False)
         serialLayout = QGridLayout()
+        serialWidget = QWidget()
+        serialWidget.setLayout(serialLayout)
         
         # Bits de données
         serialLayout.addWidget(QLabel('Bits de données:'), 0, 0)
@@ -492,12 +549,20 @@ class Terminal(QMainWindow):
         serialLayout.addWidget(QLabel('Contrôle de flux:'), 1, 2)
         serialLayout.addWidget(self.flowSelect, 1, 3)
         
-        serialGroup.setLayout(serialLayout)
+        serialGroupLayout = QVBoxLayout()
+        serialGroupLayout.addWidget(serialWidget)
+        serialGroup.setLayout(serialGroupLayout)
         advancedLayout.addWidget(serialGroup)
+        serialGroup.toggled.connect(lambda checked: serialWidget.setVisible(checked))
+        serialWidget.setVisible(False)
         
         # Groupe pour les paramètres du terminal
         terminalGroup = QGroupBox("Paramètres du terminal")
+        terminalGroup.setCheckable(True)
+        terminalGroup.setChecked(False)
         terminalParamsLayout = QVBoxLayout()
+        terminalWidget = QWidget()
+        terminalWidget.setLayout(terminalParamsLayout)
         
         # Taille du buffer
         bufferLayout = QHBoxLayout()
@@ -519,12 +584,20 @@ class Terminal(QMainWindow):
         self.enableFilterCheck = QCheckBox("Activer le filtre")
         terminalParamsLayout.addWidget(self.enableFilterCheck)
         
-        terminalGroup.setLayout(terminalParamsLayout)
+        terminalGroupLayout = QVBoxLayout()
+        terminalGroupLayout.addWidget(terminalWidget)
+        terminalGroup.setLayout(terminalGroupLayout)
         advancedLayout.addWidget(terminalGroup)
+        terminalGroup.toggled.connect(lambda checked: terminalWidget.setVisible(checked))
+        terminalWidget.setVisible(False)
         
         # Groupe pour les paramètres de débogage
         debugGroup = QGroupBox("Débogage")
+        debugGroup.setCheckable(True)
+        debugGroup.setChecked(False)
         debugLayout = QVBoxLayout()
+        debugWidget = QWidget()
+        debugWidget.setLayout(debugLayout)
         
         # Afficher les octets bruts
         self.showRawBytesCheck = QCheckBox("Afficher les octets bruts")
@@ -534,12 +607,20 @@ class Terminal(QMainWindow):
         self.showTimingCheck = QCheckBox("Afficher les délais entre les trames")
         debugLayout.addWidget(self.showTimingCheck)
         
-        debugGroup.setLayout(debugLayout)
+        debugGroupLayout = QVBoxLayout()
+        debugGroupLayout.addWidget(debugWidget)
+        debugGroup.setLayout(debugGroupLayout)
         advancedLayout.addWidget(debugGroup)
+        debugGroup.toggled.connect(lambda checked: debugWidget.setVisible(checked))
+        debugWidget.setVisible(False)
         
         # Groupe pour les paramètres de sauvegarde
         saveGroup = QGroupBox("Sauvegarde automatique")
+        saveGroup.setCheckable(True)
+        saveGroup.setChecked(False)
         saveLayout = QVBoxLayout()
+        saveWidget = QWidget()
+        saveWidget.setLayout(saveLayout)
         
         # Activation de la sauvegarde automatique
         self.autoSaveCheck = QCheckBox("Activer la sauvegarde automatique")
@@ -555,8 +636,12 @@ class Terminal(QMainWindow):
         folderLayout.addWidget(browseBtn)
         saveLayout.addLayout(folderLayout)
         
-        saveGroup.setLayout(saveLayout)
+        saveGroupLayout = QVBoxLayout()
+        saveGroupLayout.addWidget(saveWidget)
+        saveGroup.setLayout(saveGroupLayout)
         advancedLayout.addWidget(saveGroup)
+        saveGroup.toggled.connect(lambda checked: saveWidget.setVisible(checked))
+        saveWidget.setVisible(False)
         
         # Boutons de sauvegarde/restauration des paramètres
         btnLayout = QHBoxLayout()
@@ -656,11 +741,23 @@ class Terminal(QMainWindow):
 
     def checkPorts(self):
         # Vérifier si de nouveaux ports sont disponibles sans changer la sélection actuelle
-        current_ports = set([port.device for port in serial.tools.list_ports.comports()])
-        port_items = set([self.portSelect.itemText(i) for i in range(self.portSelect.count())])
-        
-        if current_ports != port_items:
-            self.refreshPorts()
+        try:
+            current_ports = set([port.device for port in serial.tools.list_ports.comports()])
+            port_items = set([self.portSelect.itemText(i) for i in range(self.portSelect.count())])
+            
+            # Vérifier si le port actuellement connecté est toujours disponible
+            if self.serial_port and hasattr(self.serial_port, 'port'):
+                connected_port = self.serial_port.port
+                if connected_port not in current_ports and self.serial_port.is_open:
+                    logger.info(f"Port {connected_port} déconnecté, fermeture de la connexion")
+                    # Appeler handleDisconnect pour éviter les problèmes de thread
+                    self.handleDisconnect()
+            
+            if current_ports != port_items:
+                self.refreshPorts()
+        except Exception as e:
+            logger.error(f"Erreur lors de la vérification des ports: {str(e)}")
+            # Ne pas planter l'application en cas d'erreur
 
     def toggle_connection(self):
         if self.serial_port and self.serial_port.is_open:
@@ -757,6 +854,7 @@ class Terminal(QMainWindow):
         
         return params
 
+    @pyqtSlot()
     def disconnect(self) -> None:
         """
         Déconnecte le port série et nettoie les ressources associées.
@@ -771,15 +869,22 @@ class Terminal(QMainWindow):
                 # Attendre un peu pour que le thread se termine proprement
                 if self.read_thread.is_alive():
                     logger.debug("Attente de la fin du thread de lecture")
-                    self.read_thread.join(0.5)
+                    try:
+                        self.read_thread.join(0.5)
+                    except RuntimeError:
+                        # Ignorer les erreurs si le thread ne peut pas être joint
+                        pass
                     
             # Fermer le port série en utilisant un bloc try-finally pour garantir la fermeture
             try:
-                if self.serial_port.is_open:
-                    self.serial_port.close()
-                    logger.debug("Port série fermé avec succès")
+                if self.serial_port and hasattr(self.serial_port, 'is_open') and self.serial_port.is_open:
+                    try:
+                        self.serial_port.close()
+                        logger.debug("Port série fermé avec succès")
+                    except (serial.SerialException, IOError, OSError) as e:
+                        logger.error(f"Erreur lors de la fermeture du port série: {str(e)}")
             except Exception as e:
-                logger.error(f"Erreur lors de la fermeture du port série: {str(e)}")
+                logger.error(f"Erreur inattendue lors de la fermeture du port série: {str(e)}")
             finally:
                 self.serial_port = None
                 self.read_thread = None
@@ -801,6 +906,13 @@ class Terminal(QMainWindow):
             logger.warning("Tentative de déconnexion sans connexion active")
             self.appendFormattedText('[Système] Aucune connexion active\n', QColor("orange"))
 
+    @pyqtSlot()
+    def handleDisconnect(self):
+        """
+        Méthode slot pour gérer la déconnexion depuis un thread différent.
+        """
+        self.disconnect()
+    
     def readData(self):
         """
         Méthode exécutée dans un thread séparé pour lire les données du port série.
@@ -813,18 +925,33 @@ class Terminal(QMainWindow):
         
         while self.read_thread_running and self.serial_port and self.serial_port.is_open:
             try:
+                # Vérifier si le port est toujours valide
+                if not self.serial_port or not self.serial_port.is_open:
+                    break
+                
                 # Lire les données disponibles
-                if self.serial_port.in_waiting > 0:
-                    data = self.serial_port.read(self.serial_port.in_waiting)
-                    if data:
-                        # Ajouter au buffer
-                        buffer.extend(data)
-                        
-                        # Si on a une fin de ligne ou un timeout, traiter les données
-                        if b'\n' in buffer or (datetime.now() - last_time).total_seconds() > timeout_seconds:
-                            self.processReceivedData(buffer)
-                            buffer = bytearray()
-                            last_time = datetime.now()
+                try:
+                    in_waiting = self.serial_port.in_waiting
+                except (serial.SerialException, IOError, OSError):
+                    # Port probablement déconnecté
+                    self._handle_serial_error("Port déconnecté ou inaccessible")
+                    break
+                    
+                if in_waiting > 0:
+                    try:
+                        data = self.serial_port.read(in_waiting)
+                        if data:
+                            # Ajouter au buffer
+                            buffer.extend(data)
+                            
+                            # Si on a une fin de ligne ou un timeout, traiter les données
+                            if b'\n' in buffer or (datetime.now() - last_time).total_seconds() > timeout_seconds:
+                                self.processReceivedData(buffer)
+                                buffer = bytearray()
+                                last_time = datetime.now()
+                    except (serial.SerialException, IOError, OSError):
+                        self._handle_serial_error("Erreur lors de la lecture des données")
+                        break
                 else:
                     # Pause courte pour éviter de saturer le CPU
                     threading.Event().wait(thread_sleep)
@@ -836,7 +963,7 @@ class Terminal(QMainWindow):
                         last_time = datetime.now()
                         
             except serial.SerialException as e:
-                self._handle_serial_error(str(e))
+                self._handle_serial_error(f"Erreur série: {str(e)}")
                 break
             except Exception as e:
                 self._handle_serial_error(f"Exception inattendue: {str(e)}")
@@ -857,7 +984,8 @@ class Terminal(QMainWindow):
             Q_ARG(QColor, QColor("red"))
         )
         # En cas d'erreur, on tente de se déconnecter proprement
-        QMetaObject.invokeMethod(self, "disconnect", Qt.QueuedConnection)
+        # Utiliser une méthode slot spécifique pour éviter les erreurs de QMetaObject
+        QMetaObject.invokeMethod(self, "handleDisconnect", Qt.QueuedConnection)
 
     def processReceivedData(self, data):
         """
@@ -1432,6 +1560,10 @@ class Terminal(QMainWindow):
         # Commandes prédéfinies
         self.settings.setValue("commands/list", self.commandsTextEdit.toPlainText())
         
+        # Visibilité des onglets
+        self.settings.setValue("tabs/esp_visible", self.espTabAction.isChecked())
+        self.settings.setValue("tabs/bt_visible", self.btTabAction.isChecked())
+        
         self.statusBarWidget.showMessage("Paramètres sauvegardés", 3000)
 
     def loadSettings(self):
@@ -1631,6 +1763,8 @@ class Terminal(QMainWindow):
 
     def executeCommand(self, cmd):
         self.inputField.setText(cmd)
+        # Basculer vers l'onglet Terminal
+        self.tabWidget.setCurrentWidget(self.terminalTab)
         if not self.repeatCheck.isChecked():  # Ne pas envoyer automatiquement en mode répétition
             self.sendData()
 
@@ -1638,6 +1772,206 @@ class Terminal(QMainWindow):
         is_visible = not self.inputGroup.isVisible()
         self.inputGroup.setVisible(is_visible)
         self.toggleSendPanelAction.setChecked(is_visible) # Mettre à jour l'état de l'action
+        
+    def setupEspAtCommandsTab(self):
+        """
+        Crée un onglet pour les commandes AT ESP01 avec des explications.
+        """
+        # Créer l'onglet
+        self.espAtTab = QWidget()
+        tabIndex = self.tabWidget.addTab(self.espAtTab, "Commandes AT ESP01")
+        self.commandTabs['esp'] = {'tab': self.espAtTab, 'index': tabIndex}
+        
+        # Layout principal
+        mainLayout = QVBoxLayout(self.espAtTab)
+        
+        # Texte d'explication
+        infoLabel = QLabel("Cliquez sur une commande pour l'insérer dans la barre d'envoi.")
+        infoLabel.setWordWrap(True)
+        mainLayout.addWidget(infoLabel)
+        
+        # Zone de défilement
+        scrollArea = QWidget()
+        scrollLayout = QVBoxLayout(scrollArea)
+        
+        # Parcourir les catégories de commandes
+        for category in ESP_AT_COMMANDS:
+            # Créer un groupe pour chaque catégorie
+            categoryGroup = QGroupBox(category["category"])
+            categoryGroup.setCheckable(True)
+            categoryGroup.setChecked(False)
+            
+            # Layout pour les commandes de cette catégorie
+            commandsLayout = QVBoxLayout()
+            commandsWidget = QWidget()
+            commandsWidget.setLayout(commandsLayout)
+            
+            # Ajouter chaque commande
+            for cmd in category["commands"]:
+                # Créer un layout pour chaque commande
+                cmdLayout = QVBoxLayout()
+                
+                # Bouton pour la commande
+                cmdBtn = QPushButton(cmd["command"])
+                cmdBtn.setStyleSheet("text-align: left; padding: 5px;")
+                cmdBtn.setToolTip(cmd["description"])
+                # Connecter le bouton à la méthode executeCommand
+                cmdBtn.clicked.connect(lambda checked, c=cmd["command"]: self.executeCommand(c))
+                cmdLayout.addWidget(cmdBtn)
+                
+                # Description de la commande
+                descLabel = QLabel(cmd["description"])
+                descLabel.setWordWrap(True)
+                descLabel.setStyleSheet("color: gray; margin-left: 10px;")
+                cmdLayout.addWidget(descLabel)
+                
+                # Ajouter un séparateur
+                cmdLayout.addWidget(QLabel(""))
+                
+                # Ajouter ce layout au layout de la catégorie
+                commandsLayout.addLayout(cmdLayout)
+            
+            # Configurer le groupe de catégorie
+            categoryLayout = QVBoxLayout()
+            categoryLayout.addWidget(commandsWidget)
+            categoryGroup.setLayout(categoryLayout)
+            
+            # Connecter le signal toggled pour afficher/masquer les commandes
+            categoryGroup.toggled.connect(lambda checked, w=commandsWidget: w.setVisible(checked))
+            commandsWidget.setVisible(False)
+            
+            # Ajouter le groupe au layout principal
+            scrollLayout.addWidget(categoryGroup)
+        
+        # Ajouter un espace extensible à la fin
+        scrollLayout.addStretch()
+        
+        # Créer une zone de défilement
+        scrollWidget = QScrollArea()
+        scrollWidget.setWidgetResizable(True)
+        scrollWidget.setWidget(scrollArea)
+        
+        # Ajouter la zone de défilement au layout principal
+        mainLayout.addWidget(scrollWidget)
+        
+    def setupBtAtCommandsTab(self):
+        """
+        Crée un onglet pour les commandes AT des modules Bluetooth HC-05/HC-06 avec des explications.
+        """
+        # Créer l'onglet
+        self.btAtTab = QWidget()
+        tabIndex = self.tabWidget.addTab(self.btAtTab, "Commandes AT Bluetooth")
+        self.commandTabs['bt'] = {'tab': self.btAtTab, 'index': tabIndex}
+        
+        # Layout principal
+        mainLayout = QVBoxLayout(self.btAtTab)
+        
+        # Texte d'explication
+        infoLabel = QLabel("Cliquez sur une commande pour l'insérer dans la barre d'envoi. Compatible avec les modules HC-05 et HC-06.")
+        infoLabel.setWordWrap(True)
+        mainLayout.addWidget(infoLabel)
+        
+        # Zone de défilement
+        scrollArea = QWidget()
+        scrollLayout = QVBoxLayout(scrollArea)
+        
+        # Parcourir les catégories de commandes
+        for category in BT_AT_COMMANDS:
+            # Créer un groupe pour chaque catégorie
+            categoryGroup = QGroupBox(category["category"])
+            categoryGroup.setCheckable(True)
+            categoryGroup.setChecked(False)
+            
+            # Layout pour les commandes de cette catégorie
+            commandsLayout = QVBoxLayout()
+            commandsWidget = QWidget()
+            commandsWidget.setLayout(commandsLayout)
+            
+            # Ajouter chaque commande
+            for cmd in category["commands"]:
+                # Créer un layout pour chaque commande
+                cmdLayout = QVBoxLayout()
+                
+                # Bouton pour la commande
+                cmdBtn = QPushButton(cmd["command"])
+                cmdBtn.setStyleSheet("text-align: left; padding: 5px;")
+                cmdBtn.setToolTip(cmd["description"])
+                # Connecter le bouton à la méthode executeCommand
+                cmdBtn.clicked.connect(lambda checked, c=cmd["command"]: self.executeCommand(c))
+                cmdLayout.addWidget(cmdBtn)
+                
+                # Description de la commande
+                descLabel = QLabel(cmd["description"])
+                descLabel.setWordWrap(True)
+                descLabel.setStyleSheet("color: gray; margin-left: 10px;")
+                cmdLayout.addWidget(descLabel)
+                
+                # Ajouter un séparateur
+                cmdLayout.addWidget(QLabel(""))
+                
+                # Ajouter ce layout au layout de la catégorie
+                commandsLayout.addLayout(cmdLayout)
+            
+            # Configurer le groupe de catégorie
+            categoryLayout = QVBoxLayout()
+            categoryLayout.addWidget(commandsWidget)
+            categoryGroup.setLayout(categoryLayout)
+            
+            # Connecter le signal toggled pour afficher/masquer les commandes
+            categoryGroup.toggled.connect(lambda checked, w=commandsWidget: w.setVisible(checked))
+            commandsWidget.setVisible(False)
+            
+            # Ajouter le groupe au layout principal
+            scrollLayout.addWidget(categoryGroup)
+        
+        # Ajouter un espace extensible à la fin
+        scrollLayout.addStretch()
+        
+        # Créer une zone de défilement
+        scrollWidget = QScrollArea()
+        scrollWidget.setWidgetResizable(True)
+        scrollWidget.setWidget(scrollArea)
+        
+        # Ajouter la zone de défilement au layout principal
+        mainLayout.addWidget(scrollWidget)
+        
+    def toggleCommandTab(self, tab_id, visible):
+        """
+        Affiche ou masque un onglet de commandes AT.
+        
+        Args:
+            tab_id (str): Identifiant de l'onglet ('esp' ou 'bt')
+            visible (bool): True pour afficher, False pour masquer
+        """
+        if tab_id in self.commandTabs:
+            tab_info = self.commandTabs[tab_id]
+            if visible:
+                # Si l'onglet n'est pas déjà présent, l'ajouter
+                if self.tabWidget.indexOf(tab_info['tab']) == -1:
+                    self.tabWidget.insertTab(tab_info['index'], tab_info['tab'], 
+                                           "Commandes AT ESP01" if tab_id == 'esp' else "Commandes AT Bluetooth")
+            else:
+                # Si l'onglet est présent, le retirer
+                index = self.tabWidget.indexOf(tab_info['tab'])
+                if index != -1:
+                    self.tabWidget.removeTab(index)
+            
+            # Sauvegarder l'état de visibilité
+            self.settings.setValue(f"tabs/{tab_id}_visible", visible)
+            
+    def loadCommandTabsVisibility(self):
+        """
+        Charge l'état de visibilité des onglets de commandes AT depuis les paramètres.
+        """
+        # Charger l'état de l'onglet ESP01
+        esp_visible = self.settings.value("tabs/esp_visible", True, type=bool)
+        self.espTabAction.setChecked(esp_visible)
+        self.toggleCommandTab('esp', esp_visible)
+        
+        # Charger l'état de l'onglet Bluetooth
+        bt_visible = self.settings.value("tabs/bt_visible", True, type=bool)
+        self.btTabAction.setChecked(bt_visible)
+        self.toggleCommandTab('bt', bt_visible)
 
     def closeEvent(self, event):
         # Déconnecter proprement
