@@ -1,84 +1,92 @@
 # CrazySerialTerm
 
-Terminal de communication série avancé avec interface graphique pour la connexion et l'interaction avec des périphériques série.
+CrazySerialTerm est un terminal série graphique moderne pour Windows, développé en Python avec PyQt5. Il permet d’envoyer et recevoir des commandes AT, d’afficher les réponses, et de personnaliser l’apparence de l’interface.
 
-## Description
+## Fonctionnalités principales
 
-CrazySerialTerm est un terminal série complet qui offre une interface graphique moderne et intuitive pour communiquer avec des périphériques via port série. Idéal pour les développeurs, les ingénieurs et les hobbyistes travaillant avec des microcontrôleurs, des modules radio, ou tout autre appareil utilisant une communication série.
+- Envoi et réception de commandes AT (ESP, Bluetooth, etc.)
+- Affichage des réponses dans différents formats (ASCII, HEX)
+- Interface graphique personnalisable (menu Apparence)
+- Sauvegarde des commandes utilisées
+- Icône personnalisée
+- Création d’un exécutable Windows (.exe) sans console
+- Ajout automatique de raccourcis sur le Bureau et dans le menu Démarrer
 
-## Fonctionnalités
+## Fichiers du projet
 
-- Interface graphique intuitive avec thèmes personnalisables (clair, sombre, hacker)
-- Connexion à des ports série avec paramètres configurables
-- Envoi et réception de données en formats ASCII et HEX
-- Enregistrement des communications dans des fichiers log
-- Historique des commandes avec navigation
-- Commandes prédéfinies personnalisables et accessibles rapidement
-- Filtrage des données reçues avec support des expressions régulières
-- Affichage des timestamps et délais entre trames
-- Outils intégrés : calculatrice de checksum et convertisseur ASCII/HEX
-- Support des commandes AT ESP01 avec documentation intégrée
-- Sections pliables/dépliables dans les paramètres avancés
-- Gestion robuste des déconnexions USB inattendues
+- `CrazySerialTerm.py` : Fichier principal, lance l’application.
+- `config.py` : Paramètres de configuration (baudrate, thèmes, etc.).
+- `esp_at_commands.py` et `bt_at_commands.py` : Listes de commandes AT pour ESP et Bluetooth.
+- `LogoFreeTermIco.ico` : Icône de l’application.
+- `README.md` : Ce fichier d’explications.
+- `requirements.txt` : Dépendances Python du projet.
+- `build_exe/` : Scripts et fichiers pour la création du build (.exe).
 
-## Installation
+---
 
-### Prérequis
+## Installation du programme Python
 
-- Python 3.6 ou supérieur
-- PyQt5
-- pyserial
+1. **Installer Python 3.8+** (https://www.python.org/downloads/)
+2. **Installer le programme et ses dépendances** :
+   - Ouvrez un terminal dans le dossier du projet
+   - Lancez :
+     ```powershell
+     python install.py
+     ```
+   - Le script crée un environnement virtuel `venv` et installe toutes les dépendances nécessaires.
+3. **Lancer le programme** :
+   - Activez le venv :
+     ```powershell
+     .\venv\Scripts\activate
+     ```
+   - Lancez l’application :
+     ```powershell
+     python CrazySerialTerm.py
+     ```
 
-### Installation des dépendances
+---
 
-```bash
-pip install PyQt5 pyserial
+## Création d’un exécutable Windows (.exe)
+
+1. **Pré-requis** : Avoir installé le programme et ses dépendances via `install.py`.
+2. **Générer le build** :
+   - Activez le venv :
+     ```powershell
+     .\venv\Scripts\activate
+     ```
+   - Lancez le script de build :
+     ```powershell
+     python build_exe\build_exe.py
+     ```
+   - Le script purge les caches, installe PyInstaller, génère le .exe sans console, et crée les raccourcis sur le Bureau et dans le menu Démarrer.
+3. **Résultat** :
+   - Le fichier `.exe` se trouve dans `build_exe/dist/CrazySerialTerm.exe`
+   - Les raccourcis sont créés automatiquement
+
+---
+
+## Désinstallation du build
+
+Pour supprimer l’exécutable et les raccourcis, lancez :
+
+```powershell
+python build_exe\uninstall.py
 ```
 
+---
 
-### Exécution
+## Conseils et dépannage
 
-## Sans console
+- Si une dépendance manque, relancez `install.py`.
+- Si le build échoue, vérifiez que le venv est bien activé et que tous les fichiers nécessaires sont présents.
+- Pour un build propre, le script supprime automatiquement les fichiers temporaires et caches.
 
-```bash
-python CrazySerialTerm.pyw 
-```
+---
 
-## Avec console
+## Auteur
 
-```bash
-python CrazySerialTerm.py
-```
-
-## Structure du projet
-
-- `CrazySerialTerm.pyw` : Script principal de l'application
-- `config.py` : Configuration de l'application
-- `serial_utils.py` : Utilitaires pour la communication série
-- `observer.py` : Implémentation du pattern Observer pour la gestion des événements
-- `checksum_calculator.py` : Module pour le calcul de checksums
-- `data_converter.py` : Module pour la conversion de données
-- `tests/` : Tests unitaires
-
-## Utilisation
-
-1. Lancez l'application
-2. Sélectionnez le port série dans la liste déroulante
-3. Configurez les paramètres de connexion (vitesse, bits de données, parité, etc.)
-4. Cliquez sur "Connecter" pour établir la connexion
-5. Utilisez le champ de saisie pour envoyer des commandes
-6. Les données reçues s'affichent dans la zone de terminal
-
-## Raccourcis clavier
-
-- `Ctrl+K` : Connecter/Déconnecter
-- `Ctrl+C` : Effacer le terminal
-- `Ctrl+S` : Enregistrer le contenu du terminal
-- `Ctrl+L` : Démarrer/Arrêter l'enregistrement
-- `Ctrl+T` : Afficher/Masquer le panneau d'envoi
-- Flèches haut/bas : Naviguer dans l'historique des commandes
+weedmanu
 
 ## Licence
 
-Ce logiciel est libre d'utilisation, de modification et de distribution sans restriction.
-
+Ce projet est open source.

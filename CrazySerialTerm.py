@@ -8,6 +8,7 @@ import re
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Union, Callable
+from collections import deque
 
 # Configuration du système de journalisation
 logging.basicConfig(
@@ -34,8 +35,7 @@ import serial
 import serial.tools.list_ports
 
 # Modules locaux
-from checksum_calculator import ChecksumCalculator
-from data_converter import DataConverter
+
 from esp_at_commands import ESP_AT_COMMANDS
 from bt_at_commands import BT_AT_COMMANDS
 
@@ -68,7 +68,41 @@ class Terminal(QMainWindow):
     # Constantes de classe
     PORT_CHECK_INTERVAL = 5000  # ms
     MAX_HISTORY_SIZE = 100
-    DEFAULT_BUFFER_SIZE = 10000
+    DEFAULT_BUFFER_SIZE = 10000  # Pour l'affichage
+    MAX_RX_BUFFER_SIZE = 50000   # Taille max du buffer circulaire de réception (en octets)
+
+    def __init__(self):
+        super().__init__()
+        # Configuration de base
+        self.serial_port = None
+        self.read_thread = None
+        self.read_thread_running = False
+        self.command_history = []
+        self.history_index: int = -1
+        self.settings = QSettings("SerialTerminal", "Settings")
+        self.log_file = None
+        self.rx_bytes_count = 0
+        self.tx_bytes_count = 0
+        self.last_receive_time = None
+        # Buffer circulaire pour la réception des données
+        self.rx_buffer = deque(maxlen=self.MAX_RX_BUFFER_SIZE)
+        # Charger les constantes de configuration
+        try:
+            from config import MAX_SAVED_COMMANDS
+            self.max_saved_commands = MAX_SAVED_COMMANDS
+        except (ImportError, AttributeError):
+            self.max_saved_commands = 10
+        logger.info("Initialisation du terminal série")
+        self.initUI()
+        icon_path = resource_path('LogoFreeTermIco.ico')
+        self.setWindowIcon(QIcon(icon_path))
+        logger.debug(f"Icône chargée depuis: {icon_path}")
+        self.loadSettings()
+        self.setupShortcuts()
+        self.port_timer = QTimer()
+        self.port_timer.timeout.connect(self.checkPorts)
+        self.port_timer.start(self.PORT_CHECK_INTERVAL)
+        logger.debug(f"Timer de vérification des ports démarré ({self.PORT_CHECK_INTERVAL}ms)")
     
     def __init__(self):
         super().__init__()
@@ -80,10 +114,12 @@ class Terminal(QMainWindow):
         self.history_index: int = -1
         self.settings = QSettings("SerialTerminal", "Settings")
         self.log_file = None
-        self.rx_bytes_count: int = 0
-        self.tx_bytes_count: int = 0
-        self.last_receive_time: Optional[datetime] = None
-        
+        self.rx_bytes_count = 0
+        self.tx_bytes_count = 0
+        self.last_receive_time = None
+        # Buffer circulaire pour la réception des données
+        self.rx_buffer = deque(maxlen=self.MAX_RX_BUFFER_SIZE)
+
         # Charger les constantes de configuration
         try:
             from config import MAX_SAVED_COMMANDS
@@ -172,7 +208,24 @@ class Terminal(QMainWindow):
         
         # Charger la visibilité des onglets de commandes
         self.loadCommandTabsVisibility()
-        
+        # Masquer les onglets au démarrage (forcer l'état masqué)
+        idx = self.tabWidget.indexOf(self.commandsTab)
+        if idx != -1:
+            self.tabWidget.removeTab(idx)
+        idx = self.tabWidget.indexOf(self.advancedTab)
+        if idx != -1:
+            self.tabWidget.removeTab(idx)
+        esp_tab = self.commandTabs.get('esp', {}).get('tab')
+        if esp_tab:
+            idx = self.tabWidget.indexOf(esp_tab)
+            if idx != -1:
+                self.tabWidget.removeTab(idx)
+        bt_tab = self.commandTabs.get('bt', {}).get('tab')
+        if bt_tab:
+            idx = self.tabWidget.indexOf(bt_tab)
+            if idx != -1:
+                self.tabWidget.removeTab(idx)
+
         self.show()
         self.resize(600, 500)  # <-- Taille initiale plus large pour un meilleur affichage
 
@@ -385,86 +438,72 @@ class Terminal(QMainWindow):
         
         # Sous-menu des onglets
         tabsMenu = viewMenu.addMenu('Onglets')
-        
+
+        # Onglet Commandes
+        self.commandsTabAction = QAction('Commandes', self)
+        self.commandsTabAction.setCheckable(True)
+        self.commandsTabAction.setChecked(True)
+        self.commandsTabAction.triggered.connect(lambda checked: self.toggleTab(self.commandsTab, checked, 'Commandes'))
+        tabsMenu.addAction(self.commandsTabAction)
+
+        # Onglet Paramètres avancés
+        self.advancedTabAction = QAction('Paramètres avancés', self)
+        self.advancedTabAction.setCheckable(True)
+        self.advancedTabAction.setChecked(True)
+        self.advancedTabAction.triggered.connect(lambda checked: self.toggleTab(self.advancedTab, checked, 'Paramètres avancés'))
+        tabsMenu.addAction(self.advancedTabAction)
+
         # Onglet ESP01
-        self.espTabAction = QAction('Commandes AT ESP01', self, checkable=True)
-        self.espTabAction.setChecked(True)  # Visible par défaut
+        self.espTabAction = QAction('Commandes AT ESP01', self)
+        self.espTabAction.setCheckable(True)
+        self.espTabAction.setChecked(True)
         self.espTabAction.triggered.connect(lambda checked: self.toggleCommandTab('esp', checked))
         tabsMenu.addAction(self.espTabAction)
-        
+
         # Onglet Bluetooth
-        self.btTabAction = QAction('Commandes AT Bluetooth', self, checkable=True)
-        self.btTabAction.setChecked(True)  # Visible par défaut
+        self.btTabAction = QAction('Commandes AT Bluetooth', self)
+        self.btTabAction.setCheckable(True)
+        self.btTabAction.setChecked(True)
         self.btTabAction.triggered.connect(lambda checked: self.toggleCommandTab('bt', checked))
         tabsMenu.addAction(self.btTabAction)
-        
-        viewMenu.addSeparator()
-        
-        # Sous-menu des thèmes
-        themesMenu = viewMenu.addMenu('Thèmes')
-        
+
+        # Sous-menu Apparence (remplace Thèmes)
+        appearanceMenu = viewMenu.addMenu('Apparence')
         # Thèmes prédéfinis
         lightThemeAction = QAction('Thème clair', self)
         lightThemeAction.triggered.connect(lambda: self.applyTheme('clair'))
-        themesMenu.addAction(lightThemeAction)
-        
+        appearanceMenu.addAction(lightThemeAction)
         darkThemeAction = QAction('Thème sombre', self)
         darkThemeAction.triggered.connect(lambda: self.applyTheme('sombre'))
-        themesMenu.addAction(darkThemeAction)
-        
+        appearanceMenu.addAction(darkThemeAction)
         hackerThemeAction = QAction('Thème hacker', self)
         hackerThemeAction.triggered.connect(lambda: self.applyTheme('hacker'))
-        themesMenu.addAction(hackerThemeAction)
-        
-        # Sous-menu de personnalisation
-        customizeMenu = viewMenu.addMenu('Personnaliser')
-        
-        # Changer la police
+        appearanceMenu.addAction(hackerThemeAction)
+        # Personnalisation
+        appearanceMenu.addSeparator()
         fontAction = QAction('Changer la police', self)
         fontAction.triggered.connect(self.changeFont)
-        customizeMenu.addAction(fontAction)
-        
-        # Changer la couleur du texte
+        appearanceMenu.addAction(fontAction)
         textColorAction = QAction('Couleur du texte', self)
         textColorAction.triggered.connect(self.changeTextColor)
-        customizeMenu.addAction(textColorAction)
-        
-        # Changer la couleur du fond
+        appearanceMenu.addAction(textColorAction)
         bgColorAction = QAction('Couleur du fond', self)
         bgColorAction.triggered.connect(self.changeBgColor)
-        customizeMenu.addAction(bgColorAction)
-        
-        # Réinitialiser la vue
+        appearanceMenu.addAction(bgColorAction)
         resetViewAction = QAction('Réinitialiser l\'apparence', self)
         resetViewAction.setToolTip("Réinitialise l'apparence au thème sombre par défaut")
         resetViewAction.triggered.connect(self.resetConfig)
-        viewMenu.addAction(resetViewAction)
-        
-        # Menu Outils
-        toolsMenu = self.menuBar().addMenu('Outils')
-        
-        # Calculatrice checksum
-        checksumAction = QAction('Calculatrice Checksum', self)
-        checksumAction.triggered.connect(self.showChecksumCalculator)
-        toolsMenu.addAction(checksumAction)
-        
-        # Convertisseur de données
-        convertAction = QAction('Convertisseur (ASCII/HEX)', self)
-        convertAction.triggered.connect(self.showConverter)
-        toolsMenu.addAction(convertAction)
-        
-        # Menu Aide
-        helpMenu = self.menuBar().addMenu('Aide')
-        
-        # Raccourcis clavier
-        shortcutsAction = QAction('Raccourcis clavier', self)
-        shortcutsAction.triggered.connect(self.showShortcuts)
-        helpMenu.addAction(shortcutsAction)
-        
-        # À propos
-        aboutAction = QAction('À propos', self)
-        aboutAction.triggered.connect(self.showAbout)
-        helpMenu.addAction(aboutAction)
+        appearanceMenu.addAction(resetViewAction)
+    
+    def toggleTab(self, tabWidget, visible, label):
+        idx = self.tabWidget.indexOf(tabWidget)
+        if visible:
+            if idx == -1:
+                # Ajoute l'onglet à la bonne position (après Terminal)
+                self.tabWidget.addTab(tabWidget, label)
+        else:
+            if idx != -1:
+                self.tabWidget.removeTab(idx)
 
     def setupAdvancedTab(self):
         # Onglet des paramètres avancés
@@ -916,19 +955,19 @@ class Terminal(QMainWindow):
     def readData(self):
         """
         Méthode exécutée dans un thread séparé pour lire les données du port série.
-        Collecte les données et les envoie pour traitement.
+        Utilise un buffer circulaire pour éviter le blocage si trop de données arrivent.
         """
         last_time = datetime.now()
-        buffer = bytearray()
         timeout_seconds = 0.1  # Timeout en secondes
         thread_sleep = 0.01    # Temps de pause pour éviter de saturer le CPU
-        
+        temp_buffer = bytearray()
+
         while self.read_thread_running and self.serial_port and self.serial_port.is_open:
             try:
                 # Vérifier si le port est toujours valide
                 if not self.serial_port or not self.serial_port.is_open:
                     break
-                
+
                 # Lire les données disponibles
                 try:
                     in_waiting = self.serial_port.in_waiting
@@ -936,18 +975,20 @@ class Terminal(QMainWindow):
                     # Port probablement déconnecté
                     self._handle_serial_error("Port déconnecté ou inaccessible")
                     break
-                    
+
                 if in_waiting > 0:
                     try:
                         data = self.serial_port.read(in_waiting)
                         if data:
-                            # Ajouter au buffer
-                            buffer.extend(data)
-                            
+                            # Ajouter les données au buffer circulaire
+                            self.rx_buffer.extend(data)
+                            temp_buffer.extend(data)
+
                             # Si on a une fin de ligne ou un timeout, traiter les données
-                            if b'\n' in buffer or (datetime.now() - last_time).total_seconds() > timeout_seconds:
-                                self.processReceivedData(buffer)
-                                buffer = bytearray()
+                            if b'\n' in temp_buffer or (datetime.now() - last_time).total_seconds() > timeout_seconds:
+                                # On traite uniquement ce qui est dans temp_buffer
+                                self.processReceivedData(bytes(temp_buffer))
+                                temp_buffer = bytearray()
                                 last_time = datetime.now()
                     except (serial.SerialException, IOError, OSError):
                         self._handle_serial_error("Erreur lors de la lecture des données")
@@ -955,20 +996,21 @@ class Terminal(QMainWindow):
                 else:
                     # Pause courte pour éviter de saturer le CPU
                     threading.Event().wait(thread_sleep)
-                    
-                    # Si le buffer contient des données et qu'un certain temps s'est écoulé
-                    if buffer and (datetime.now() - last_time).total_seconds() > timeout_seconds:
-                        self.processReceivedData(buffer)
-                        buffer = bytearray()
+
+                    # Si le buffer temporaire contient des données et qu'un certain temps s'est écoulé
+                    if temp_buffer and (datetime.now() - last_time).total_seconds() > timeout_seconds:
+                        self.processReceivedData(bytes(temp_buffer))
+                        temp_buffer = bytearray()
                         last_time = datetime.now()
-                        
+
+                # Si le buffer circulaire est plein, on purge les plus anciennes données automatiquement (deque le fait)
+
             except serial.SerialException as e:
                 self._handle_serial_error(f"Erreur série: {str(e)}")
                 break
             except Exception as e:
                 self._handle_serial_error(f"Exception inattendue: {str(e)}")
                 break
-                
     def _handle_serial_error(self, error_message):
         """
         Gère les erreurs de communication série.
@@ -1107,6 +1149,12 @@ class Terminal(QMainWindow):
         was_at_bottom = scrollbar.value() >= (scrollbar.maximum() - 4)
         # Sauvegarder la position actuelle de la barre de défilement
         old_scroll_value = scrollbar.value()
+        if scrollbar is not None:
+            try:
+                was_at_bottom = scrollbar.value() >= (scrollbar.maximum() - 4)
+                old_scroll_value = scrollbar.value()
+            except Exception:
+                pass
         
         # Vérifier si nous avons besoin de limiter la taille du buffer
         try:
@@ -1147,6 +1195,11 @@ class Terminal(QMainWindow):
             # Si la case est décochée ET qu'on n'était PAS en bas,
             # restaurer la position de la barre de défilement précédente.
             scrollbar.setValue(old_scroll_value)
+            if scrollbar is not None:
+                try:
+                    scrollbar.setValue(old_scroll_value)
+                except Exception:
+                    pass
 
     def sendData(self) -> None:
         """
@@ -1411,18 +1464,14 @@ class Terminal(QMainWindow):
     def get_dark_palette(self):
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(53, 53, 53))
-        palette.setColor(QPalette.WindowText, Qt.white)
+        palette.setColor(QPalette.WindowText, QColor('white'))
         palette.setColor(QPalette.Base, QColor(42, 42, 42))
         palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
-        palette.setColor(QPalette.ToolTipBase, Qt.white)
-        palette.setColor(QPalette.ToolTipText, Qt.white)
-        palette.setColor(QPalette.Text, Qt.white)
+        palette.setColor(QPalette.ToolTipBase, QColor('white'))
+        palette.setColor(QPalette.ToolTipText, QColor('white'))
+        palette.setColor(QPalette.Text, QColor('white'))
         palette.setColor(QPalette.Button, QColor(53, 53, 53))
-        palette.setColor(QPalette.ButtonText, Qt.white)
-        palette.setColor(QPalette.BrightText, Qt.red)
-        palette.setColor(QPalette.Link, QColor(42, 130, 218))
-        palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-        palette.setColor(QPalette.HighlightedText, Qt.black)
+        palette.setColor(QPalette.ButtonText, QColor('white'))
         return palette
 
     def get_hacker_palette(self):
