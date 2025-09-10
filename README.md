@@ -33,11 +33,11 @@ CrazySerialTerm est un terminal série graphique moderne pour Windows, développ
      ```powershell
      python install.py
      ```
-   - Le script crée un environnement virtuel `venv` et installe toutes les dépendances nécessaires.
+   - Le script crée un environnement virtuel `.venv` et installe toutes les dépendances nécessaires.
 3. **Lancer le programme** :
    - Activez le venv :
      ```powershell
-     .\venv\Scripts\activate
+     .\.venv\Scripts\activate
      ```
    - Lancez l’application :
      ```powershell
@@ -52,7 +52,7 @@ CrazySerialTerm est un terminal série graphique moderne pour Windows, développ
 2. **Générer le build** :
    - Activez le venv :
      ```powershell
-     .\venv\Scripts\activate
+     .\.venv\Scripts\activate
      ```
    - Lancez le script de build :
      ```powershell
@@ -67,11 +67,15 @@ CrazySerialTerm est un terminal série graphique moderne pour Windows, développ
 
 ## Désinstallation du build
 
-Pour supprimer l’exécutable et les raccourcis, lancez :
+Pour supprimer l’exécutable, les raccourcis, le dossier `dist` et l’environnement virtuel `.venv`, lancez :
 
 ```powershell
 python build_exe\uninstall.py
 ```
+
+> **Attention** :  
+> Le script ne peut pas supprimer `.venv` si vous êtes encore dans l’environnement virtuel.  
+> Désactivez-le d’abord avec `deactivate` ou fermez le terminal avant de relancer la désinstallation.
 
 ---
 
@@ -80,6 +84,7 @@ python build_exe\uninstall.py
 - Si une dépendance manque, relancez `install.py`.
 - Si le build échoue, vérifiez que le venv est bien activé et que tous les fichiers nécessaires sont présents.
 - Pour un build propre, le script supprime automatiquement les fichiers temporaires et caches.
+- Si la suppression de `.venv` échoue, quittez l’environnement virtuel puis relancez la suppression.
 
 ---
 
