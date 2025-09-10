@@ -12,9 +12,24 @@ spec_path = build_dir / "CrazySerialTerm.spec"
 # Suppression du .exe généré
 if exe_path.exists():
     print(f"Suppression de l'exécutable : {exe_path}")
-    exe_path.unlink()
+    try:
+        exe_path.unlink()
+    except PermissionError:
+        print("Erreur : Impossible de supprimer l'exécutable. Fermez CrazySerialTerm.exe puis relancez la désinstallation.")
+        exit(1)
 else:
     print(f"Exécutable non trouvé : {exe_path}")
+
+# Suppression du dossier dist
+dist_dir = build_dir / "dist"
+if dist_dir.exists():
+    print(f"Suppression du dossier dist : {dist_dir}")
+    try:
+        shutil.rmtree(dist_dir)
+    except Exception as e:
+        print(f"Erreur lors de la suppression du dossier dist : {e}")
+else:
+    print(f"Dossier dist non trouvé : {dist_dir}")
 
 # Suppression du fichier spec
 if spec_path.exists():

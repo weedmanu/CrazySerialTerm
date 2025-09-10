@@ -11,11 +11,12 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 from collections import deque
 
 # Configuration du système de journalisation
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "serial_terminal.log")
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("serial_terminal.log"),
+        logging.FileHandler(log_path),
         logging.StreamHandler()
     ]
 )
@@ -71,39 +72,6 @@ class Terminal(QMainWindow):
     DEFAULT_BUFFER_SIZE = 10000  # Pour l'affichage
     MAX_RX_BUFFER_SIZE = 50000   # Taille max du buffer circulaire de réception (en octets)
 
-    def __init__(self):
-        super().__init__()
-        # Configuration de base
-        self.serial_port = None
-        self.read_thread = None
-        self.read_thread_running = False
-        self.command_history = []
-        self.history_index: int = -1
-        self.settings = QSettings("SerialTerminal", "Settings")
-        self.log_file = None
-        self.rx_bytes_count = 0
-        self.tx_bytes_count = 0
-        self.last_receive_time = None
-        # Buffer circulaire pour la réception des données
-        self.rx_buffer = deque(maxlen=self.MAX_RX_BUFFER_SIZE)
-        # Charger les constantes de configuration
-        try:
-            from config import MAX_SAVED_COMMANDS
-            self.max_saved_commands = MAX_SAVED_COMMANDS
-        except (ImportError, AttributeError):
-            self.max_saved_commands = 10
-        logger.info("Initialisation du terminal série")
-        self.initUI()
-        icon_path = resource_path('LogoFreeTermIco.ico')
-        self.setWindowIcon(QIcon(icon_path))
-        logger.debug(f"Icône chargée depuis: {icon_path}")
-        self.loadSettings()
-        self.setupShortcuts()
-        self.port_timer = QTimer()
-        self.port_timer.timeout.connect(self.checkPorts)
-        self.port_timer.start(self.PORT_CHECK_INTERVAL)
-        logger.debug(f"Timer de vérification des ports démarré ({self.PORT_CHECK_INTERVAL}ms)")
-    
     def __init__(self):
         super().__init__()
         # Configuration de base
@@ -167,7 +135,7 @@ class Terminal(QMainWindow):
         self.tabWidget.addTab(self.terminalTab, "Terminal")
         
         # Layout principal pour l'onglet terminal
-        self.layout = QVBoxLayout(self.terminalTab)
+        self.main_layout = QVBoxLayout(self.terminalTab)
         
         # Panneau de configuration de connexion
         self.setupConnectionPanel()
@@ -178,7 +146,7 @@ class Terminal(QMainWindow):
         font = QFont("Consolas", 12) # Police par défaut du terminal en taille 12
         self.terminal.setFont(font)
         self.terminal.setMinimumHeight(200)  # Hauteur minimale pour le terminal
-        self.layout.addWidget(self.terminal, 4)  # Donner plus d'espace au terminal
+        self.main_layout.addWidget(self.terminal, 4)  # Donner plus d'espace au terminal
         
         # Stocker les valeurs par défaut
         self.defaultFont = self.terminal.font()
@@ -323,7 +291,7 @@ class Terminal(QMainWindow):
         self.timestampCheckBox = QCheckBox('Afficher timestamps')
         
         self.connectionGroup.setLayout(connectionLayout)
-        self.layout.addWidget(self.connectionGroup)
+        self.main_layout.addWidget(self.connectionGroup)
 
     def setupInputPanel(self):
         # Panel pour la saisie de texte
@@ -360,7 +328,7 @@ class Terminal(QMainWindow):
         self.repeatInterval.setFixedWidth(60)
 
         self.inputGroup.setLayout(inputLayout) # Utiliser self.inputGroup
-        self.layout.addWidget(self.inputGroup) # Utiliser self.inputGroup
+        self.main_layout.addWidget(self.inputGroup) # Utiliser self.inputGroup
 
         # Timer pour l'envoi répété
         self.repeat_timer = QTimer()

@@ -12,7 +12,7 @@ requirements_build = build_dir / "requirements_build.txt"
 requirements_proj = root / "requirements.txt"
 exe_name = "CrazySerialTerm.exe"
 exe_path = build_dir / "dist" / exe_name
-spec_path = root / f"{exe_name.replace('.exe', '.spec')}"
+spec_path = build_dir / f"{exe_name.replace('.exe', '.spec')}"
 
 # Purge des dossiers __pycache__ et build
 def purge_folder(folder):
@@ -52,7 +52,12 @@ pyinstaller_cmd = [
     "pyinstaller",
     "--onefile",
     "--windowed",
+    # inclure l'icône et toutes ressources nécessaires
     f"--icon={icon_path}",
+    f"--add-data={icon_path};.",
+    "--distpath", str(build_dir / "dist"),
+    "--workpath", str(build_dir / "build"),
+    "--specpath", str(build_dir),
     str(root / "CrazySerialTerm.py")
 ]
 subprocess.run(pyinstaller_cmd, check=True)
