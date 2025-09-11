@@ -49,7 +49,9 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(requirements_p
 # Création de l'exécutable avec PyInstaller
 print("Création de l'exécutable...")
 pyinstaller_cmd = [
-    "pyinstaller",
+    sys.executable,  # Utiliser l'interpréteur Python actuel
+    "-m",
+    "PyInstaller",
     "--onefile",
     "--windowed",
     # inclure l'icône et toutes ressources nécessaires
@@ -80,6 +82,14 @@ try:
 except ImportError:
     print("Installation de pywin32 pour la création des raccourcis...")
     subprocess.run([sys.executable, "-m", "pip", "install", "pywin32"], check=True)
+    
+    # Exécuter le script de post-installation de pywin32
+    print("Configuration de pywin32...")
+    import site
+    pywin32_postinstall = os.path.join(site.getsitepackages()[0], "Scripts", "pywin32_postinstall.py")
+    subprocess.run([sys.executable, pywin32_postinstall, "-install"], check=True)
+    
+    # Réessayer l'import
     from win32com.client import Dispatch
 
 shell = Dispatch('WScript.Shell')
