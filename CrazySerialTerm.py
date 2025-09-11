@@ -85,8 +85,6 @@ class Terminal(QMainWindow):
         self.rx_bytes_count = 0
         self.tx_bytes_count = 0
         self.last_receive_time = None
-        # Buffer circulaire pour la réception des données
-        self.rx_buffer = deque(maxlen=self.MAX_RX_BUFFER_SIZE)
 
         # Charger les constantes de configuration
         try:
@@ -776,6 +774,11 @@ class Terminal(QMainWindow):
         """
         Établit une connexion avec le port série sélectionné en utilisant les paramètres configurés.
         """
+        # Vérifier qu'on n'est pas déjà connecté
+        if self.serial_port and self.serial_port.is_open:
+            logger.warning("Tentative de connexion avec port déjà ouvert")
+            self.disconnect()
+            
         port = self.portSelect.currentText()
         if not port:
             self.showMessage("Aucun port série disponible. Vérifiez les connexions.")
@@ -929,13 +932,15 @@ class Terminal(QMainWindow):
         timeout_seconds = 0.1  # Timeout en secondes
         thread_sleep = 0.01    # Temps de pause pour éviter de saturer le CPU
         temp_buffer = bytearray()
-
+        error_count = 0
+        max_errors = 5
+    
         while self.read_thread_running and self.serial_port and self.serial_port.is_open:
             try:
                 # Vérifier si le port est toujours valide
                 if not self.serial_port or not self.serial_port.is_open:
                     break
-
+    
                 # Lire les données disponibles
                 try:
                     in_waiting = self.serial_port.in_waiting
@@ -943,7 +948,7 @@ class Terminal(QMainWindow):
                     # Port probablement déconnecté
                     self._handle_serial_error("Port déconnecté ou inaccessible")
                     break
-
+    
                 if in_waiting > 0:
                     try:
                         data = self.serial_port.read(in_waiting)
@@ -951,34 +956,51 @@ class Terminal(QMainWindow):
                             # Ajouter les données au buffer circulaire
                             self.rx_buffer.extend(data)
                             temp_buffer.extend(data)
-
+    
                             # Si on a une fin de ligne ou un timeout, traiter les données
                             if b'\n' in temp_buffer or (datetime.now() - last_time).total_seconds() > timeout_seconds:
                                 # On traite uniquement ce qui est dans temp_buffer
                                 self.processReceivedData(bytes(temp_buffer))
                                 temp_buffer = bytearray()
                                 last_time = datetime.now()
+                        
+                        # Réinitialiser le compteur d'erreurs si succès
+                        error_count = 0
+                        
                     except (serial.SerialException, IOError, OSError):
+                        error_count += 1
+                        if error_count >= max_errors:
+                            logger.error(f"Trop d'erreurs ({max_errors}), arrêt de la lecture")
+                            self._handle_serial_error(f"Arrêt après {max_errors} erreurs consécutives")
+                            break
                         self._handle_serial_error("Erreur lors de la lecture des données")
-                        break
                 else:
                     # Pause courte pour éviter de saturer le CPU
                     threading.Event().wait(thread_sleep)
-
+    
                     # Si le buffer temporaire contient des données et qu'un certain temps s'est écoulé
                     if temp_buffer and (datetime.now() - last_time).total_seconds() > timeout_seconds:
                         self.processReceivedData(bytes(temp_buffer))
                         temp_buffer = bytearray()
                         last_time = datetime.now()
-
+    
                 # Si le buffer circulaire est plein, on purge les plus anciennes données automatiquement (deque le fait)
-
+    
             except serial.SerialException as e:
+                error_count += 1
+                if error_count >= max_errors:
+                    logger.error(f"Trop d'erreurs série ({max_errors}): {str(e)}")
+                    self._handle_serial_error(f"Arrêt après {max_errors} erreurs: {str(e)}")
+                    break
                 self._handle_serial_error(f"Erreur série: {str(e)}")
-                break
             except Exception as e:
+                error_count += 1
+                if error_count >= max_errors:
+                    logger.error(f"Trop d'exceptions ({max_errors}): {str(e)}")
+                    self._handle_serial_error(f"Arrêt après {max_errors} exceptions: {str(e)}")
+                    break
                 self._handle_serial_error(f"Exception inattendue: {str(e)}")
-                break
+    
     def _handle_serial_error(self, error_message):
         """
         Gère les erreurs de communication série.
@@ -1124,12 +1146,22 @@ class Terminal(QMainWindow):
             except Exception:
                 pass
         
-        # Vérifier si nous avons besoin de limiter la taille du buffer
+        # Vérifier la taille en octets aussi, pas seulement en lignes
         try:
             max_lines = int(self.bufferSizeInput.text())
             current_text = self.terminal.toPlainText()
             
-            if current_text.count('\n') > max_lines:
+            # Limiter aussi par taille en octets (ex: 5MB)
+            MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+            if len(current_text.encode('utf-8')) > MAX_BYTES or current_text.count('\n') > max_lines:
+                # Garder seulement 80% du buffer quand on purge
+                lines = current_text.split('\n')
+                keep_lines = int(max_lines * 0.8)
+                new_text = '\n'.join(lines[-keep_lines:])
+                self.terminal.setPlainText(new_text)
+                # Ajouter un message système
+                self.terminal.append("[Système] Buffer purgé pour libérer de la mémoire\n")
+            elif current_text.count('\n') > max_lines:
                 # Supprimer les anciennes lignes
                 lines = current_text.split('\n')
                 new_text = '\n'.join(lines[-max_lines:])
@@ -1239,7 +1271,7 @@ class Terminal(QMainWindow):
     def _prepare_data_to_send(self, text: str, format_type: str, eol: bytes) -> bytes:
         """
         Prépare les données à envoyer selon le format sélectionné.
-        
+
         Args:
             text: Texte à envoyer
             format_type: Format d'envoi ('ASCII' ou 'HEX')
@@ -1251,14 +1283,27 @@ class Terminal(QMainWindow):
         if format_type == 'ASCII':
             # Envoyer en mode texte
             return text.encode('utf-8') + eol
+    
         else:  # HEX
             # Convertir la chaîne HEX en bytes
             # Nettoyer l'entrée en supprimant les espaces et caractères non-hex
-            hex_text = ''.join(c for c in text if c.upper() in '0123456789ABCDEF')
-            if len(hex_text) % 2 != 0:
-                hex_text += '0'  # Ajouter un 0 si nombre impair de caractères
-            return bytes.fromhex(hex_text) + eol
+            hex_text = ''.join(c for c in text.upper() if c in '0123456789ABCDEF ')
+            hex_text = hex_text.replace(' ', '')
+        
+        # Validation plus stricte
+        if not hex_text:
+            raise ValueError("Aucune donnée hexadécimale valide")
+        
+        if len(hex_text) % 2 != 0:
+            # Avertir l'utilisateur et corriger
+            self.appendFormattedText('[Avertissement] Nombre impair de caractères HEX, ajout d\'un 0\n', QColor("orange"))
+            hex_text += '0'
             
+        try:
+            return bytes.fromhex(hex_text) + eol
+        except ValueError as e:
+            raise ValueError(f"Format hexadécimal invalide: {str(e)}")
+
     def _handle_repeat_send(self, text: str) -> None:
         """
         Gère l'envoi répété des données si l'option est activée.
@@ -2069,4 +2114,3 @@ if __name__ == "__main__":
     
     # Exécuter l'application
     sys.exit(app.exec_())
-    
